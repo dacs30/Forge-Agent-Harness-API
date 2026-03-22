@@ -103,7 +103,7 @@ sequenceDiagram
     Middleware->>Middleware: Logging
     Middleware->>Handler: Route to handler
 
-    rect rgb(40, 40, 60)
+    rect rgb(200, 220, 245)
         Note over Handler,Docker: Example: POST /v1/environments
         Handler->>Store: Create environment record
         Handler->>Engine: CreateContainer(env)
