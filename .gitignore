@@ -1,0 +1,29 @@
+# Build output
+bin/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Environment / secrets
+.env
+.env.*
+
+# Coverage
+coverage.out
+coverage.html
