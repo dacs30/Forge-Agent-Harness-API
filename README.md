@@ -4,6 +4,9 @@
 
 The premise is simple: **AI agents work better when they have a real environment to operate in.** Instead of sandboxed snippets or simulated shells, HaaS gives each agent its own container with a real filesystem, real networking, and real command execution — then cleans it up when the agent is done.
 
+Example usage:
+![Test Chat App using HaaS](image.png)
+
 ---
 
 ## Architecture
@@ -404,4 +407,6 @@ haas/
 
 ## License
 
-TBD
+MIT License.
+
+Made with ❤️ and Claude by Danilo.
