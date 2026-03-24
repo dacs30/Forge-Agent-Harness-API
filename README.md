@@ -122,14 +122,14 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-    [*] --> creating: POST /v1/environments
-    creating --> running: Container started
-    running --> running: exec / file ops<br/>(resets idle timer)
-    running --> stopping: DELETE or Reaper
-    stopping --> destroyed: Container removed
+    [*] --> creating : POST /v1/environments
+    creating --> running : Container started
+    running --> running : exec / file ops (resets idle timer)
+    running --> stopping : DELETE or Reaper
+    stopping --> destroyed : Container removed
     destroyed --> [*]
 
-    note right of running
+    note left of running
         Idle timeout: 10 min (default)
         Max lifetime: 60 min (default)
     end note
