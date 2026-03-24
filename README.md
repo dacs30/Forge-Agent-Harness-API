@@ -124,12 +124,12 @@ sequenceDiagram
 stateDiagram-v2
     [*] --> creating : POST /v1/environments
     creating --> running : Container started
-    running --> running : exec / file ops (resets idle timer)
     running --> stopping : DELETE or Reaper
     stopping --> destroyed : Container removed
     destroyed --> [*]
 
     note left of running
+        exec / file ops reset idle timer
         Idle timeout: 10 min (default)
         Max lifetime: 60 min (default)
     end note
