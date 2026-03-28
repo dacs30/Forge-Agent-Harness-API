@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -60,6 +61,23 @@ func (w *statusWriter) Unwrap() http.ResponseWriter {
 func (w *statusWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
+	}
+}
+
+func AuthMiddleware(keys []string) func(http.Handler) http.Handler {
+	keySet := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		keySet[k] = struct{}{}
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if _, ok := keySet[token]; !ok {
+				writeError(w, http.StatusUnauthorized, "invalid or missing API key")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 

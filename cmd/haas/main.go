@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
+
 	"haas/internal/api"
 	"haas/internal/config"
 	"haas/internal/engine"
@@ -20,7 +22,14 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
+	_ = godotenv.Load() // load .env if present; silently ignored in production
+
 	cfg := config.Load()
+
+	if len(cfg.APIKeys) == 0 {
+		logger.Error("HAAS_API_KEYS is required but not set")
+		os.Exit(1)
+	}
 
 	memStore := store.NewMemoryStore(cfg.IdleTimeout, cfg.MaxLifetime)
 

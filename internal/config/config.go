@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -16,20 +17,38 @@ type Config struct {
 	MaxLifetime          time.Duration
 	DefaultNetworkPolicy string
 	MaxFileUploadMB      int64
+	APIKeys              []string
 }
 
 func Load() *Config {
 	return &Config{
-		ListenAddr:         envOrDefault("HAAS_LISTEN_ADDR", ":8080"),
-		DockerHost:         envOrDefault("DOCKER_HOST", ""),
-		DefaultCPU:         envOrDefaultFloat("HAAS_DEFAULT_CPU", 1.0),
-		DefaultMemoryMB:    envOrDefaultInt("HAAS_DEFAULT_MEMORY_MB", 2048),
-		DefaultDiskMB:      envOrDefaultInt("HAAS_DEFAULT_DISK_MB", 4096),
+		ListenAddr:           envOrDefault("HAAS_LISTEN_ADDR", ":8080"),
+		DockerHost:           envOrDefault("DOCKER_HOST", ""),
+		DefaultCPU:           envOrDefaultFloat("HAAS_DEFAULT_CPU", 1.0),
+		DefaultMemoryMB:      envOrDefaultInt("HAAS_DEFAULT_MEMORY_MB", 2048),
+		DefaultDiskMB:        envOrDefaultInt("HAAS_DEFAULT_DISK_MB", 4096),
 		IdleTimeout:          envOrDefaultDuration("HAAS_IDLE_TIMEOUT", 10*time.Minute),
 		MaxLifetime:          envOrDefaultDuration("HAAS_MAX_LIFETIME", 60*time.Minute),
 		DefaultNetworkPolicy: envOrDefault("HAAS_DEFAULT_NETWORK_POLICY", "none"),
 		MaxFileUploadMB:      envOrDefaultInt("HAAS_MAX_FILE_UPLOAD_MB", 100),
+		APIKeys:              envOrDefaultStringSlice("HAAS_API_KEYS", nil),
 	}
+}
+
+func envOrDefaultStringSlice(key string, fallback []string) []string {
+	if v := os.Getenv(key); v != "" {
+		parts := strings.Split(v, ",")
+		keys := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if t := strings.TrimSpace(p); t != "" {
+				keys = append(keys, t)
+			}
+		}
+		if len(keys) > 0 {
+			return keys
+		}
+	}
+	return fallback
 }
 
 func envOrDefault(key, fallback string) string {

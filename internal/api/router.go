@@ -31,6 +31,7 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 	filesHandler := NewFilesHandler(s, e, logger, cfg)
 
 	r.Route("/v1/environments", func(r chi.Router) {
+		r.Use(AuthMiddleware(cfg.APIKeys))
 		r.Post("/", envHandler.Create)
 		r.Get("/", envHandler.List)
 

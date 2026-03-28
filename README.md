@@ -179,6 +179,30 @@ go run ./cmd/haas
 
 The server starts on `:8080` by default.
 
+### Authentication
+
+HaaS requires an API key to be set before starting. Add it to a `.env` file in the project root:
+
+```bash
+HAAS_API_KEYS=your-secret-key
+```
+
+Multiple keys are supported (comma-separated), useful for rotating keys or issuing per-client keys:
+
+```bash
+HAAS_API_KEYS=key-for-agent-1,key-for-agent-2
+```
+
+The server will refuse to start if `HAAS_API_KEYS` is not set.
+
+All requests to `/v1/environments` must include the key as a Bearer token:
+
+```bash
+curl -H "Authorization: Bearer your-secret-key" http://localhost:8080/v1/environments
+```
+
+> **Note:** The `/healthz` endpoint does not require authentication.
+
 ### Verify
 
 ```bash
@@ -322,6 +346,7 @@ All settings are configured via environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
+| `HAAS_API_KEYS` | (required) | Comma-separated list of valid API keys |
 | `HAAS_LISTEN_ADDR` | `:8080` | Server bind address |
 | `DOCKER_HOST` | (auto) | Docker daemon socket |
 | `HAAS_DEFAULT_CPU` | `1.0` | Default CPU cores per container |
@@ -398,7 +423,7 @@ haas/
 - [ ] **MCP Server** — [Model Context Protocol](https://modelcontextprotocol.io/) server so agents can use HaaS tools natively
 - [ ] **Persistent storage** — Swap `MemoryStore` for a database-backed implementation
 - [ ] **Image allowlist** — Restrict which Docker images can be used
-- [ ] **Auth & API keys** — Secure multi-tenant access
+- [x] **Auth & API keys** — Bearer token authentication via `HAAS_API_KEYS`
 - [ ] **Egress firewall** — Proper iptables rules for `egress-limited` network policy
 - [ ] **WebSocket exec** — Interactive terminal sessions over WebSocket
 - [ ] **Container snapshots** — Save and restore environment state
