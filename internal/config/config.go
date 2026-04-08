@@ -18,6 +18,10 @@ type Config struct {
 	DefaultNetworkPolicy string
 	MaxFileUploadMB      int64
 	APIKeys              []string
+
+	// MCP server. Runs alongside the REST API.
+	MCPListenAddr string // e.g. ":8091"
+	MCPRESTURL    string // URL the MCP server uses to call the REST API (default: derived from ListenAddr)
 }
 
 func Load() *Config {
@@ -32,6 +36,8 @@ func Load() *Config {
 		DefaultNetworkPolicy: envOrDefault("HAAS_DEFAULT_NETWORK_POLICY", "none"),
 		MaxFileUploadMB:      envOrDefaultInt("HAAS_MAX_FILE_UPLOAD_MB", 100),
 		APIKeys:              envOrDefaultStringSlice("HAAS_API_KEYS", nil),
+		MCPListenAddr:        envOrDefault("HAAS_MCP_LISTEN_ADDR", ":8091"),
+		MCPRESTURL:           envOrDefault("HAAS_MCP_REST_URL", ""),
 	}
 }
 

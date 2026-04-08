@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 	"haas/internal/config"
 	"haas/internal/engine"
 	"haas/internal/lifecycle"
+	"haas/internal/mcpserver"
 	"haas/internal/store"
 )
 
@@ -43,6 +45,28 @@ func main() {
 	go reaper.Start()
 
 	router := api.NewRouter(memStore, eng, logger, cfg)
+
+	// Resolve the URL the MCP server uses to call back into the REST API.
+	// Defaults to localhost:<port> but can be overridden via HAAS_MCP_REST_URL
+	// for containerised deployments where localhost doesn't reach the REST API.
+	restURL := cfg.MCPRESTURL
+	if restURL == "" {
+		_, port, err := net.SplitHostPort(cfg.ListenAddr)
+		if err != nil {
+			logger.Error("invalid HAAS_LISTEN_ADDR", "addr", cfg.ListenAddr, "error", err)
+			os.Exit(1)
+		}
+		restURL = "http://localhost:" + port
+	}
+
+	// Start the MCP server after a brief wait to let the REST API bind first.
+	mcpSrv := mcpserver.New(restURL, cfg.APIKeys[0])
+	go func() {
+		logger.Info("starting MCP server (streamable HTTP)", "addr", cfg.MCPListenAddr, "rest_url", restURL)
+		if err := mcpSrv.ServeStreamableHTTP(cfg.MCPListenAddr, cfg.APIKeys); err != nil {
+			logger.Error("MCP server error", "error", err)
+		}
+	}()
 
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,
