@@ -17,11 +17,14 @@ import (
 	"haas/internal/store"
 )
 
+const testAPIKey = "test-key"
+
 func testDeps() (store.Store, engine.Engine, *slog.Logger, *config.Config) {
 	s := store.NewMemoryStore(10*time.Minute, 60*time.Minute)
 	e := &engine.MockEngine{}
 	l := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	cfg := config.Load()
+	cfg.APIKeys = []string{testAPIKey}
 	return s, e, l, cfg
 }
 
@@ -32,6 +35,7 @@ func TestCreateEnvironment(t *testing.T) {
 	body := `{"image":"alpine:latest","cpu":1,"memory_mb":512}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/environments/", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testAPIKey)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
@@ -62,6 +66,7 @@ func TestCreateEnvironment_MissingImage(t *testing.T) {
 	body := `{"cpu":1,"memory_mb":512}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/environments/", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testAPIKey)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
@@ -78,6 +83,7 @@ func TestCreateEnvironment_InvalidCPU(t *testing.T) {
 	body := `{"image":"alpine:latest","cpu":10,"memory_mb":512}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/environments/", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testAPIKey)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
@@ -103,6 +109,7 @@ func TestDestroyEnvironment(t *testing.T) {
 	s.Create(context.Background(), env)
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/environments/env_test123", nil)
+	req.Header.Set("Authorization", "Bearer "+testAPIKey)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
@@ -123,6 +130,7 @@ func TestDestroyEnvironment_NotFound(t *testing.T) {
 	router := NewRouter(s, e, l, cfg)
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/environments/nonexistent", nil)
+	req.Header.Set("Authorization", "Bearer "+testAPIKey)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
