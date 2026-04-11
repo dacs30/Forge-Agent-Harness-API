@@ -18,6 +18,7 @@ type Config struct {
 	DefaultNetworkPolicy string
 	MaxFileUploadMB      int64
 	APIKeys              []string
+	AllowedImages        []string // empty = all images allowed
 
 	// MCP server. Runs alongside the REST API.
 	MCPListenAddr string // e.g. ":8091"
@@ -36,6 +37,7 @@ func Load() *Config {
 		DefaultNetworkPolicy: envOrDefault("HAAS_DEFAULT_NETWORK_POLICY", "none"),
 		MaxFileUploadMB:      envOrDefaultInt("HAAS_MAX_FILE_UPLOAD_MB", 100),
 		APIKeys:              envOrDefaultStringSlice("HAAS_API_KEYS", nil),
+		AllowedImages:        envOrDefaultStringSlice("HAAS_ALLOWED_IMAGES", nil),
 		MCPListenAddr:        envOrDefault("HAAS_MCP_LISTEN_ADDR", ":8091"),
 		MCPRESTURL:           envOrDefault("HAAS_MCP_REST_URL", ""),
 	}

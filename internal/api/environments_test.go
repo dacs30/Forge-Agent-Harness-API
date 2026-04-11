@@ -93,6 +93,42 @@ func TestCreateEnvironment_InvalidCPU(t *testing.T) {
 	}
 }
 
+func TestCreateEnvironment_ImageNotAllowed(t *testing.T) {
+	s, e, l, cfg := testDeps()
+	cfg.AllowedImages = []string{"ubuntu:22.04", "python:3.12"}
+	router := NewRouter(s, e, l, cfg)
+
+	body := `{"image":"alpine:latest","cpu":1,"memory_mb":512}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/environments/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testAPIKey)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateEnvironment_ImageAllowed(t *testing.T) {
+	s, e, l, cfg := testDeps()
+	cfg.AllowedImages = []string{"ubuntu:22.04", "alpine:latest"}
+	router := NewRouter(s, e, l, cfg)
+
+	body := `{"image":"alpine:latest","cpu":1,"memory_mb":512}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/environments/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testAPIKey)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestDestroyEnvironment(t *testing.T) {
 	s, e, l, cfg := testDeps()
 	router := NewRouter(s, e, l, cfg)

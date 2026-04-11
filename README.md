@@ -374,6 +374,7 @@ Response (NDJSON stream):
 | `HAAS_MAX_LIFETIME` | `60m` | Maximum container lifetime |
 | `HAAS_DEFAULT_NETWORK_POLICY` | `none` | Default network policy |
 | `HAAS_MAX_FILE_UPLOAD_MB` | `100` | Max file upload size (MB) |
+| `HAAS_ALLOWED_IMAGES` | (all allowed) | Comma-separated allowlist of permitted Docker images (e.g. `ubuntu:22.04,python:3.12`) |
 | `HAAS_MCP_LISTEN_ADDR` | `:8091` | MCP server bind address |
 | `HAAS_MCP_REST_URL` | (derived) | URL the MCP server uses to call the REST API — override for containerised deployments |
 
@@ -449,7 +450,7 @@ haas/
 - [ ] **TypeScript SDK** — For JS/TS agent frameworks
 - [x] **MCP Server** — [Model Context Protocol](https://modelcontextprotocol.io/) server so agents can use HaaS tools natively
 - [ ] **Persistent storage** — Swap `MemoryStore` for a database-backed implementation
-- [ ] **Image allowlist** — Restrict which Docker images can be used
+- [x] **Image allowlist** — Restrict which Docker images can be used
 - [x] **Auth & API keys** — Bearer token authentication via `HAAS_API_KEYS`
 - [ ] **Egress firewall** — Proper iptables rules for `egress-limited` network policy
 - [ ] **WebSocket exec** — Interactive terminal sessions over WebSocket

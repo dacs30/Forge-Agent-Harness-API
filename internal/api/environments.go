@@ -53,6 +53,11 @@ func (h *EnvironmentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(h.config.AllowedImages) > 0 && !imageAllowed(req.Image, h.config.AllowedImages) {
+		writeError(w, http.StatusForbidden, "image not allowed: "+req.Image)
+		return
+	}
+
 	// Apply defaults
 	if req.CPU <= 0 {
 		req.CPU = h.config.DefaultCPU
@@ -183,4 +188,13 @@ func (h *EnvironmentHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, envs)
+}
+
+func imageAllowed(image string, allowlist []string) bool {
+	for _, allowed := range allowlist {
+		if image == allowed {
+			return true
+		}
+	}
+	return false
 }
