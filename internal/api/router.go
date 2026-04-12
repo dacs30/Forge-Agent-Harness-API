@@ -29,6 +29,7 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 
 	envHandler := NewEnvironmentHandler(s, e, logger, cfg)
 	execHandler := NewExecHandler(s, e, logger)
+	execWSHandler := NewExecWSHandler(s, e, logger)
 	filesHandler := NewFilesHandler(s, e, logger, cfg)
 
 	r.Route("/v1/environments", func(r chi.Router) {
@@ -40,6 +41,7 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 			r.Get("/", envHandler.Get)
 			r.Delete("/", envHandler.Destroy)
 			r.Post("/exec", execHandler.Exec)
+			r.Get("/exec/ws", execWSHandler.ExecWS)
 
 			r.Route("/files", func(r chi.Router) {
 				r.Get("/", filesHandler.List)

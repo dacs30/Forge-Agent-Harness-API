@@ -7,6 +7,16 @@ import (
 	"haas/internal/domain"
 )
 
+// InteractiveSession is a live, bidirectional TTY exec session on a container.
+// Write sends bytes to stdin; Reader returns the merged stdout/stderr TTY stream.
+type InteractiveSession interface {
+	io.Writer                                              // stdin
+	Reader() io.Reader                                     // merged stdout/stderr (raw TTY)
+	Resize(ctx context.Context, cols, rows uint) error    // resize the terminal
+	Close() error                                          // close the connection
+	ExecID() string                                        // Docker exec ID (for exit code)
+}
+
 type Engine interface {
 	// CreateContainer provisions and starts a container per the environment spec.
 	// Returns the Docker container ID.
@@ -21,6 +31,10 @@ type Engine interface {
 	// Exec runs a command inside a running container.
 	// Returns a reader for the multiplexed stdout/stderr stream.
 	Exec(ctx context.Context, containerID string, req domain.ExecRequest) (io.ReadCloser, error)
+
+	// ExecInteractive opens a TTY exec session with stdin attached.
+	// Used for WebSocket-based interactive terminals.
+	ExecInteractive(ctx context.Context, containerID string, req domain.ExecRequest) (InteractiveSession, error)
 
 	// ExecExitCode returns the exit code of a completed exec.
 	ExecExitCode(ctx context.Context, execID string) (int, error)

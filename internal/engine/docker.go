@@ -2,12 +2,14 @@ package engine
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"strings"
 	"time"
 
@@ -167,6 +169,66 @@ func (e *execReadCloser) Close() error {
 
 func (e *execReadCloser) ExecID() string {
 	return e.execID
+}
+
+func (e *DockerEngine) ExecInteractive(ctx context.Context, containerID string, req domain.ExecRequest) (InteractiveSession, error) {
+	execCfg := container.ExecOptions{
+		Cmd:          req.Command,
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+		Tty:          true,
+	}
+	if req.WorkingDir != "" {
+		execCfg.WorkingDir = req.WorkingDir
+	}
+
+	execResp, err := e.client.ContainerExecCreate(ctx, containerID, execCfg)
+	if err != nil {
+		return nil, fmt.Errorf("exec create: %w", err)
+	}
+
+	attachResp, err := e.client.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{Tty: true})
+	if err != nil {
+		return nil, fmt.Errorf("exec attach: %w", err)
+	}
+
+	return &interactiveSession{
+		conn:   attachResp.Conn,
+		reader: attachResp.Reader,
+		execID: execResp.ID,
+		client: e.client,
+	}, nil
+}
+
+type interactiveSession struct {
+	conn   net.Conn
+	reader *bufio.Reader
+	execID string
+	client *client.Client
+}
+
+func (s *interactiveSession) Write(p []byte) (int, error) {
+	return s.conn.Write(p)
+}
+
+func (s *interactiveSession) Reader() io.Reader {
+	return s.reader
+}
+
+func (s *interactiveSession) Resize(ctx context.Context, cols, rows uint) error {
+	return s.client.ContainerExecResize(ctx, s.execID, container.ResizeOptions{
+		Width:  cols,
+		Height: rows,
+	})
+}
+
+func (s *interactiveSession) Close() error {
+	return s.conn.Close()
+}
+
+func (s *interactiveSession) ExecID() string {
+	return s.execID
 }
 
 func (e *DockerEngine) ExecExitCode(ctx context.Context, execID string) (int, error) {

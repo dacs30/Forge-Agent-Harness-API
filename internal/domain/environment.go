@@ -67,3 +67,17 @@ type FileInfo struct {
 	IsDir   bool   `json:"is_dir"`
 	ModTime string `json:"mod_time"`
 }
+
+// WSInputMessage is sent from the client to the server over a WebSocket exec session.
+type WSInputMessage struct {
+	Type string `json:"type"`           // "input" or "resize"
+	Data string `json:"data,omitempty"` // raw bytes to write to stdin (type=input)
+	Cols uint   `json:"cols,omitempty"` // terminal width  (type=resize)
+	Rows uint   `json:"rows,omitempty"` // terminal height (type=resize)
+}
+
+// WSOutputMessage is sent from the server to the client over a WebSocket exec session.
+type WSOutputMessage struct {
+	Stream string `json:"stream"` // "output", "exit", or "error"
+	Data   string `json:"data"`
+}

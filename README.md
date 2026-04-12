@@ -316,6 +316,7 @@ const response = await anthropic.beta.messages.create({
 | `GET` | `/v1/environments/{id}` | Get environment details |
 | `DELETE` | `/v1/environments/{id}` | Destroy an environment |
 | `POST` | `/v1/environments/{id}/exec` | Execute a command (NDJSON stream) |
+| `GET` | `/v1/environments/{id}/exec/ws` | Interactive terminal session (WebSocket) |
 | `GET` | `/v1/environments/{id}/files?path=` | List files at path |
 | `GET` | `/v1/environments/{id}/files/content?path=` | Download a file |
 | `PUT` | `/v1/environments/{id}/files/content?path=` | Upload a file |
@@ -356,6 +357,41 @@ Response (NDJSON stream):
 ```
 {"stream":"stdout","data":"hello world\n"}
 {"stream":"exit","data":"0"}
+```
+
+### Interactive Terminal (WebSocket)
+
+Connect to `GET /v1/environments/{id}/exec/ws` to open a live, bidirectional terminal session. The connection is a standard WebSocket (`ws://` or `wss://`).
+
+**Query parameters:**
+
+| Parameter | Default | Description |
+|---|---|---|
+| `cmd` | `bash` | Command to run (repeatable for arguments, e.g. `?cmd=python3&cmd=script.py`) |
+| `working_dir` | (container default) | Working directory inside the container |
+
+**Client → Server messages:**
+
+```json
+{"type": "input",  "data": "ls -la\n"}
+{"type": "resize", "cols": 120, "rows": 40}
+```
+
+**Server → Client messages:**
+
+```json
+{"stream": "output", "data": "total 0\n..."}
+{"stream": "exit",   "data": "0"}
+{"stream": "error",  "data": "failed to start session"}
+```
+
+> TTY mode merges stdout and stderr into a single `output` stream.
+
+**Example using [websocat](https://github.com/vi/websocat):**
+
+```bash
+websocat "ws://localhost:8080/v1/environments/env_a1b2c3d4/exec/ws?cmd=bash" \
+  -H "Authorization: Bearer your-secret-key"
 ```
 
 ---
@@ -454,7 +490,7 @@ haas/
 - [x] **Image allowlist** — Restrict which Docker images can be used
 - [x] **Auth & API keys** — Bearer token authentication via `HAAS_API_KEYS`
 - [ ] **Egress firewall** — Proper iptables rules for `egress-limited` network policy
-- [ ] **WebSocket exec** — Interactive terminal sessions over WebSocket
+- [x] **WebSocket exec** — Interactive terminal sessions over WebSocket
 - [ ] **Container snapshots** — Save and restore environment state
 
 ---
