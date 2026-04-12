@@ -447,7 +447,7 @@ haas/
 ## Roadmap
 
 - [x] **Go SDK** — Client library in `pkg/sdk/` using the types already defined in `pkg/apitypes`
-- [ ] **Python SDK** — For Python-based agent frameworks (LangChain, CrewAI, etc.)
+- [x] **Python SDK** — For Python-based agent frameworks (LangChain, CrewAI, etc.) — [`haas-py`](https://pypi.org/project/haas-py/)
 - [ ] **TypeScript SDK** — For JS/TS agent frameworks
 - [x] **MCP Server** — [Model Context Protocol](https://modelcontextprotocol.io/) server so agents can use HaaS tools natively
 - [x] **Persistent storage** — Swap `MemoryStore` for a database-backed implementation
