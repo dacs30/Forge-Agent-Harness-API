@@ -30,12 +30,16 @@ func (s *MemoryStore) Create(_ context.Context, env *domain.Environment) error {
 	return nil
 }
 
-func (s *MemoryStore) Get(_ context.Context, id string) (*domain.Environment, error) {
+// Get returns the environment by ID. If userID is non-empty, it must match env.UserID.
+func (s *MemoryStore) Get(_ context.Context, id, userID string) (*domain.Environment, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	env, ok := s.envs[id]
 	if !ok {
 		return nil, ErrNotFound
+	}
+	if userID != "" && env.UserID != userID {
+		return nil, ErrNotFound // do not reveal existence to other tenants
 	}
 	return env, nil
 }
@@ -43,28 +47,41 @@ func (s *MemoryStore) Get(_ context.Context, id string) (*domain.Environment, er
 func (s *MemoryStore) Update(_ context.Context, env *domain.Environment) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.envs[env.ID]; !ok {
+	existing, ok := s.envs[env.ID]
+	if !ok {
 		return ErrNotFound
+	}
+	if existing.UserID != env.UserID {
+		return ErrNotFound // do not reveal existence to other tenants
 	}
 	s.envs[env.ID] = env
 	return nil
 }
 
-func (s *MemoryStore) Delete(_ context.Context, id string) error {
+// Delete removes the environment by ID. If userID is non-empty, it must match env.UserID.
+func (s *MemoryStore) Delete(_ context.Context, id, userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.envs[id]; !ok {
+	env, ok := s.envs[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if userID != "" && env.UserID != userID {
 		return ErrNotFound
 	}
 	delete(s.envs, id)
 	return nil
 }
 
-func (s *MemoryStore) List(_ context.Context) ([]*domain.Environment, error) {
+// List returns all environments. If userID is non-empty, only that tenant's environments are returned.
+func (s *MemoryStore) List(_ context.Context, userID string) ([]*domain.Environment, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]*domain.Environment, 0, len(s.envs))
 	for _, env := range s.envs {
+		if userID != "" && env.UserID != userID {
+			continue
+		}
 		result = append(result, env)
 	}
 	return result, nil
@@ -86,4 +103,9 @@ func (s *MemoryStore) ListExpired(_ context.Context) ([]*domain.Environment, err
 		}
 	}
 	return expired, nil
+}
+
+// BootstrapUser is a no-op for the in-memory store.
+func (s *MemoryStore) BootstrapUser(_ context.Context, _, _ string) error {
+	return nil
 }

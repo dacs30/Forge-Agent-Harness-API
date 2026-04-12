@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"haas/internal/auth"
 	"haas/internal/domain"
 	"haas/internal/engine"
 	"haas/internal/store"
@@ -28,8 +29,9 @@ func NewExecHandler(s store.Store, e engine.Engine, l *slog.Logger) *ExecHandler
 
 func (h *ExecHandler) Exec(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	userID := auth.UserIDFromContext(r.Context())
 
-	env, err := h.store.Get(r.Context(), id)
+	env, err := h.store.Get(r.Context(), id, userID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "environment not found")
@@ -79,7 +81,9 @@ func (h *ExecHandler) Exec(w http.ResponseWriter, r *http.Request) {
 
 	// Update last used timestamp
 	env.LastUsedAt = time.Now()
-	h.store.Update(r.Context(), env)
+	if err := h.store.Update(r.Context(), env); err != nil {
+		h.logger.Error("failed to update environment last used time", "error", err, "env_id", id)
+	}
 
 	// Stream NDJSON response
 	flusher, ok := w.(http.Flusher)

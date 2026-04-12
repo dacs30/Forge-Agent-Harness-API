@@ -45,7 +45,7 @@ func TestReaper_ReapsExpiredEnvironments(t *testing.T) {
 	}
 
 	// Verify env was deleted from store
-	_, err := s.Get(context.Background(), "env_expired")
+	_, err := s.Get(context.Background(), "env_expired", "")
 	if err != store.ErrNotFound {
 		t.Fatalf("expected env to be deleted from store")
 	}

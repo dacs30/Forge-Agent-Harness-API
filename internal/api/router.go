@@ -7,12 +7,13 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"haas/internal/auth"
 	"haas/internal/config"
 	"haas/internal/engine"
 	"haas/internal/store"
 )
 
-func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.Config) http.Handler {
+func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.Config, authMgr *auth.Manager) http.Handler {
 	r := chi.NewRouter()
 
 	// Middleware stack
@@ -21,7 +22,7 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 	r.Use(LoggingMiddleware(logger))
 	r.Use(middleware.RealIP)
 
-	// Health check
+	// Health check — no auth required
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -31,7 +32,7 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 	filesHandler := NewFilesHandler(s, e, logger, cfg)
 
 	r.Route("/v1/environments", func(r chi.Router) {
-		r.Use(AuthMiddleware(cfg.APIKeys))
+		r.Use(authMgr.Middleware())
 		r.Post("/", envHandler.Create)
 		r.Get("/", envHandler.List)
 

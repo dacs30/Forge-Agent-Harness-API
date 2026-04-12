@@ -19,6 +19,7 @@ type Config struct {
 	MaxFileUploadMB      int64
 	APIKeys              []string
 	AllowedImages        []string // empty = all images allowed
+	DBURL                string   // empty = in-memory store; sqlite:///path or postgres://... for persistent
 
 	// MCP server. Runs alongside the REST API.
 	MCPListenAddr string // e.g. ":8091"
@@ -38,6 +39,7 @@ func Load() *Config {
 		MaxFileUploadMB:      envOrDefaultInt("HAAS_MAX_FILE_UPLOAD_MB", 100),
 		APIKeys:              envOrDefaultStringSlice("HAAS_API_KEYS", nil),
 		AllowedImages:        envOrDefaultStringSlice("HAAS_ALLOWED_IMAGES", nil),
+		DBURL:                envOrDefault("HAAS_DB_URL", ""),
 		MCPListenAddr:        envOrDefault("HAAS_MCP_LISTEN_ADDR", ":8091"),
 		MCPRESTURL:           envOrDefault("HAAS_MCP_REST_URL", ""),
 	}

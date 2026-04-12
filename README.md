@@ -375,6 +375,7 @@ Response (NDJSON stream):
 | `HAAS_DEFAULT_NETWORK_POLICY` | `none` | Default network policy |
 | `HAAS_MAX_FILE_UPLOAD_MB` | `100` | Max file upload size (MB) |
 | `HAAS_ALLOWED_IMAGES` | (all allowed) | Comma-separated allowlist of permitted Docker images (e.g. `ubuntu:22.04,python:3.12`) |
+| `HAAS_DB_URL` | (in-memory) | Database URL for persistent storage. `sqlite:///path/to/haas.db` for local dev, `postgres://user:pass@host/db` for production |
 | `HAAS_MCP_LISTEN_ADDR` | `:8091` | MCP server bind address |
 | `HAAS_MCP_REST_URL` | (derived) | URL the MCP server uses to call the REST API — override for containerised deployments |
 
@@ -449,7 +450,7 @@ haas/
 - [ ] **Python SDK** — For Python-based agent frameworks (LangChain, CrewAI, etc.)
 - [ ] **TypeScript SDK** — For JS/TS agent frameworks
 - [x] **MCP Server** — [Model Context Protocol](https://modelcontextprotocol.io/) server so agents can use HaaS tools natively
-- [ ] **Persistent storage** — Swap `MemoryStore` for a database-backed implementation
+- [x] **Persistent storage** — Swap `MemoryStore` for a database-backed implementation
 - [x] **Image allowlist** — Restrict which Docker images can be used
 - [x] **Auth & API keys** — Bearer token authentication via `HAAS_API_KEYS`
 - [ ] **Egress firewall** — Proper iptables rules for `egress-limited` network policy

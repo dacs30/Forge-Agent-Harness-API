@@ -27,3 +27,8 @@ Thumbs.db
 # Coverage
 coverage.out
 coverage.html
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3

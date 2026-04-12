@@ -82,7 +82,7 @@ func (r *Reaper) reap() {
 			}
 		}
 
-		if err := r.store.Delete(ctx, env.ID); err != nil {
+		if err := r.store.Delete(ctx, env.ID, ""); err != nil { // "" = admin bypass, cleans all tenants
 			r.logger.Error("failed to delete environment during reap", "error", err, "env_id", env.ID)
 		}
 	}

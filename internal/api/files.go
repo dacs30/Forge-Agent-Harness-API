@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"haas/internal/auth"
 	"haas/internal/config"
 	"haas/internal/domain"
 	"haas/internal/engine"
@@ -32,8 +33,9 @@ func NewFilesHandler(s store.Store, e engine.Engine, l *slog.Logger, cfg *config
 
 func (h *FilesHandler) getRunningEnv(w http.ResponseWriter, r *http.Request) (*domain.Environment, bool) {
 	id := chi.URLParam(r, "id")
+	userID := auth.UserIDFromContext(r.Context())
 
-	env, err := h.store.Get(r.Context(), id)
+	env, err := h.store.Get(r.Context(), id, userID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "environment not found")
@@ -70,7 +72,9 @@ func (h *FilesHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	env.LastUsedAt = time.Now()
-	h.store.Update(r.Context(), env)
+	if err := h.store.Update(r.Context(), env); err != nil {
+		h.logger.Error("failed to update environment last used time", "error", err, "env_id", env.ID)
+	}
 
 	writeJSON(w, http.StatusOK, files)
 }
@@ -96,7 +100,9 @@ func (h *FilesHandler) Read(w http.ResponseWriter, r *http.Request) {
 	defer reader.Close()
 
 	env.LastUsedAt = time.Now()
-	h.store.Update(r.Context(), env)
+	if err := h.store.Update(r.Context(), env); err != nil {
+		h.logger.Error("failed to update environment last used time", "error", err, "env_id", env.ID)
+	}
 
 	fileName := path[strings.LastIndex(path, "/")+1:]
 	contentType := mime.TypeByExtension(filepath.Ext(fileName))
@@ -133,7 +139,9 @@ func (h *FilesHandler) Write(w http.ResponseWriter, r *http.Request) {
 	}
 
 	env.LastUsedAt = time.Now()
-	h.store.Update(r.Context(), env)
+	if err := h.store.Update(r.Context(), env); err != nil {
+		h.logger.Error("failed to update environment last used time", "error", err, "env_id", env.ID)
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

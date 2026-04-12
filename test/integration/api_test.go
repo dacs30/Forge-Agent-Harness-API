@@ -14,17 +14,22 @@ import (
 	"time"
 
 	"haas/internal/api"
+	"haas/internal/auth"
 	"haas/internal/config"
 	"haas/internal/engine"
 	"haas/internal/store"
 	"haas/test/testutil"
 )
 
+const integrationAPIKey = "integration-test-key"
+
 func setupServer(t *testing.T) http.Handler {
 	t.Helper()
 	testutil.SkipIfNoDocker(t)
 
 	cfg := config.Load()
+	cfg.APIKeys = []string{integrationAPIKey}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	s := store.NewMemoryStore(cfg.IdleTimeout, cfg.MaxLifetime)
 	e, err := engine.NewDockerEngine(cfg, logger)
@@ -32,7 +37,15 @@ func setupServer(t *testing.T) http.Handler {
 		t.Fatalf("failed to create docker engine: %v", err)
 	}
 
-	return api.NewRouter(s, e, logger, cfg)
+	authMgr := auth.New(cfg.APIKeys)
+	return api.NewRouter(s, e, logger, cfg, authMgr)
+}
+
+// authReq is a helper that creates a request pre-loaded with the test API key.
+func authReq(method, target string, body io.Reader) *http.Request {
+	req := httptest.NewRequest(method, target, body)
+	req.Header.Set("Authorization", "Bearer "+integrationAPIKey)
+	return req
 }
 
 func TestFullLifecycle(t *testing.T) {
@@ -40,7 +53,7 @@ func TestFullLifecycle(t *testing.T) {
 
 	// 1. Create environment
 	createBody := `{"image":"alpine:latest","cpu":0.5,"memory_mb":256,"network_policy":"none"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/environments/", bytes.NewBufferString(createBody))
+	req := authReq(http.MethodPost, "/v1/environments/", bytes.NewBufferString(createBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -62,7 +75,7 @@ func TestFullLifecycle(t *testing.T) {
 
 	// 2. Execute command
 	execBody := `{"command":["echo","hello world"]}`
-	req = httptest.NewRequest(http.MethodPost, "/v1/environments/"+envID+"/exec", bytes.NewBufferString(execBody))
+	req = authReq(http.MethodPost, "/v1/environments/"+envID+"/exec", bytes.NewBufferString(execBody))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -74,7 +87,7 @@ func TestFullLifecycle(t *testing.T) {
 
 	// 3. Write file
 	fileContent := []byte("hello from haas")
-	req = httptest.NewRequest(http.MethodPut, "/v1/environments/"+envID+"/files/content?path=/tmp/test.txt", bytes.NewReader(fileContent))
+	req = authReq(http.MethodPut, "/v1/environments/"+envID+"/files/content?path=/tmp/test.txt", bytes.NewReader(fileContent))
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -83,7 +96,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	// 4. Read file back
-	req = httptest.NewRequest(http.MethodGet, "/v1/environments/"+envID+"/files/content?path=/tmp/test.txt", nil)
+	req = authReq(http.MethodGet, "/v1/environments/"+envID+"/files/content?path=/tmp/test.txt", nil)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -96,7 +109,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	// 5. List files
-	req = httptest.NewRequest(http.MethodGet, "/v1/environments/"+envID+"/files/?path=/tmp", nil)
+	req = authReq(http.MethodGet, "/v1/environments/"+envID+"/files/?path=/tmp", nil)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -106,11 +119,36 @@ func TestFullLifecycle(t *testing.T) {
 	t.Logf("files: %s", w.Body.String())
 
 	// 6. Destroy environment
-	req = httptest.NewRequest(http.MethodDelete, "/v1/environments/"+envID, nil)
+	req = authReq(http.MethodDelete, "/v1/environments/"+envID, nil)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("destroy: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAuth_MissingKey(t *testing.T) {
+	router := setupServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/environments/", nil) // no auth header
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestAuth_InvalidKey(t *testing.T) {
+	router := setupServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/environments/", nil)
+	req.Header.Set("Authorization", "Bearer wrong-key")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
 	}
 }

@@ -2,17 +2,23 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
+	_ "github.com/jackc/pgx/v5/stdlib"
+	_ "modernc.org/sqlite"
 
 	"haas/internal/api"
+	"haas/internal/auth"
 	"haas/internal/config"
 	"haas/internal/engine"
 	"haas/internal/lifecycle"
@@ -33,7 +39,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	memStore := store.NewMemoryStore(cfg.IdleTimeout, cfg.MaxLifetime)
+	authMgr := auth.New(cfg.APIKeys)
+
+	appStore, err := openStore(cfg, logger)
+	if err != nil {
+		logger.Error("failed to open store", "error", err)
+		os.Exit(1)
+	}
+
+	// Persist user/key mappings so environments survive server restarts.
+	ctx := context.Background()
+	for _, entry := range authMgr.Entries() {
+		if err := appStore.BootstrapUser(ctx, entry.KeyHash, entry.UserID); err != nil {
+			logger.Error("failed to bootstrap user", "error", err)
+			os.Exit(1)
+		}
+	}
 
 	eng, err := engine.NewDockerEngine(cfg, logger)
 	if err != nil {
@@ -41,10 +62,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	reaper := lifecycle.NewReaper(memStore, eng, logger, cfg.IdleTimeout, cfg.MaxLifetime)
+	reaper := lifecycle.NewReaper(appStore, eng, logger, cfg.IdleTimeout, cfg.MaxLifetime)
 	go reaper.Start()
 
-	router := api.NewRouter(memStore, eng, logger, cfg)
+	router := api.NewRouter(appStore, eng, logger, cfg, authMgr)
 
 	// Resolve the URL the MCP server uses to call back into the REST API.
 	// Defaults to localhost:<port> but can be overridden via HAAS_MCP_REST_URL
@@ -97,4 +118,35 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error("shutdown error", "error", err)
 	}
+}
+
+// openStore returns a Store backed by the database URL in cfg, or the in-memory
+// store when HAAS_DB_URL is not set.
+func openStore(cfg *config.Config, logger *slog.Logger) (store.Store, error) {
+	if cfg.DBURL == "" {
+		logger.Info("using in-memory store (set HAAS_DB_URL for persistence)")
+		return store.NewMemoryStore(cfg.IdleTimeout, cfg.MaxLifetime), nil
+
+	}
+
+	var driver, dsn string
+	if strings.HasPrefix(cfg.DBURL, "postgres://") || strings.HasPrefix(cfg.DBURL, "postgresql://") {
+		driver = "pgx"
+		dsn = cfg.DBURL
+		logger.Info("using PostgreSQL store", "url", cfg.DBURL)
+	} else {
+		driver = "sqlite"
+		dsn = strings.TrimPrefix(cfg.DBURL, "sqlite://")
+		logger.Info("using SQLite store", "path", dsn)
+	}
+
+	db, err := sql.Open(driver, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("ping database: %w", err)
+	}
+
+	return store.NewSQLStore(db, driver, cfg.IdleTimeout, cfg.MaxLifetime)
 }

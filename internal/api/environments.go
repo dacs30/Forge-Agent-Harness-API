@@ -4,11 +4,13 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"haas/internal/auth"
 	"haas/internal/config"
 	"haas/internal/domain"
 	"haas/internal/engine"
@@ -88,9 +90,11 @@ func (h *EnvironmentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := auth.UserIDFromContext(r.Context())
 	now := time.Now()
 	env := &domain.Environment{
-		ID: "env_" + uuid.New().String()[:8],
+		ID:     "env_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:12],
+		UserID: userID,
 		Spec: domain.EnvironmentSpec{
 			Image:         req.Image,
 			CPU:           req.CPU,
@@ -115,7 +119,9 @@ func (h *EnvironmentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Create and start container
 	containerID, err := h.engine.CreateContainer(r.Context(), env)
 	if err != nil {
-		h.store.Delete(r.Context(), env.ID)
+		if delErr := h.store.Delete(r.Context(), env.ID, userID); delErr != nil {
+			h.logger.Error("failed to delete environment after container create failure", "error", delErr, "env_id", env.ID)
+		}
 		h.logger.Error("failed to create container", "error", err, "env_id", env.ID)
 		writeError(w, http.StatusInternalServerError, "failed to create container")
 		return
@@ -124,14 +130,18 @@ func (h *EnvironmentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	env.ContainerID = containerID
 	if err := h.engine.StartContainer(r.Context(), containerID); err != nil {
 		h.engine.StopContainer(r.Context(), containerID)
-		h.store.Delete(r.Context(), env.ID)
+		if delErr := h.store.Delete(r.Context(), env.ID, userID); delErr != nil {
+			h.logger.Error("failed to delete environment after container start failure", "error", delErr, "env_id", env.ID)
+		}
 		h.logger.Error("failed to start container", "error", err, "env_id", env.ID)
 		writeError(w, http.StatusInternalServerError, "failed to start container")
 		return
 	}
 
 	env.Status = domain.StatusRunning
-	h.store.Update(r.Context(), env)
+	if err := h.store.Update(r.Context(), env); err != nil {
+		h.logger.Error("failed to update environment status to running", "error", err, "env_id", env.ID)
+	}
 
 	writeJSON(w, http.StatusCreated, CreateEnvironmentResponse{
 		ID:     env.ID,
@@ -142,8 +152,9 @@ func (h *EnvironmentHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 func (h *EnvironmentHandler) Destroy(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	userID := auth.UserIDFromContext(r.Context())
 
-	env, err := h.store.Get(r.Context(), id)
+	env, err := h.store.Get(r.Context(), id, userID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "environment not found")
@@ -159,16 +170,20 @@ func (h *EnvironmentHandler) Destroy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	env.Status = domain.StatusDestroyed
-	h.store.Delete(r.Context(), id)
+	if err := h.store.Delete(r.Context(), id, userID); err != nil {
+		h.logger.Error("failed to delete environment record", "error", err, "env_id", id)
+		writeError(w, http.StatusInternalServerError, "failed to delete environment")
+		return
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *EnvironmentHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	userID := auth.UserIDFromContext(r.Context())
 
-	env, err := h.store.Get(r.Context(), id)
+	env, err := h.store.Get(r.Context(), id, userID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "environment not found")
@@ -182,7 +197,9 @@ func (h *EnvironmentHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *EnvironmentHandler) List(w http.ResponseWriter, r *http.Request) {
-	envs, err := h.store.List(r.Context())
+	userID := auth.UserIDFromContext(r.Context())
+
+	envs, err := h.store.List(r.Context(), userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list environments")
 		return
