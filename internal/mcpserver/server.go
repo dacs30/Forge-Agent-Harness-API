@@ -43,12 +43,33 @@ func (s *Server) ServeSSE(addr, baseURL string) error {
 
 // ServeStreamableHTTP starts the MCP server using the Streamable HTTP transport
 // (required by VS Code and other modern MCP clients). Listens on addr, serves at /.
+// Also registers legacy SSE transport at /sse + /message so that clients using
+// the old SSE protocol (Python mcp SDK with sse_client, etc.) still work.
 // If apiKeys is non-empty, requests must include a valid Authorization: Bearer <key> header.
 func (s *Server) ServeStreamableHTTP(addr string, apiKeys []string) error {
-	mcpHandler := server.NewStreamableHTTPServer(s.mcp, server.WithEndpointPath("/"))
-	var handler http.Handler = mcpHandler
+	// Build a valid base URL for the SSE server so it can tell clients where to POST.
+	// addr may be ":8091" (no host part) — default to localhost in that case.
+	host := addr
+	if strings.HasPrefix(host, ":") {
+		host = "localhost" + host
+	}
+	baseURL := "http://" + host
+
+	// Modern Streamable HTTP transport — POSTs and GET streaming at /.
+	streamableHandler := server.NewStreamableHTTPServer(s.mcp, server.WithEndpointPath("/"))
+
+	// Legacy SSE transport — GET /sse for discovery, POST /message for requests.
+	// Sharing s.mcp means both transports dispatch to the same registered tools.
+	sseServer := server.NewSSEServer(s.mcp, server.WithBaseURL(baseURL))
+
+	mux := http.NewServeMux()
+	mux.Handle("/sse", sseServer.SSEHandler())
+	mux.Handle("/message", sseServer.MessageHandler())
+	mux.Handle("/", streamableHandler) // catch-all — Streamable HTTP
+
+	var handler http.Handler = mux
 	if len(apiKeys) > 0 {
-		handler = bearerAuthMiddleware(apiKeys, mcpHandler)
+		handler = bearerAuthMiddleware(apiKeys, mux)
 	}
 	return http.ListenAndServe(addr, handler)
 }
