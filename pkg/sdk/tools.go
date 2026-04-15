@@ -32,6 +32,10 @@ func Tools() []ToolDefinition {
 		toolListFiles,
 		toolReadFile,
 		toolWriteFile,
+		toolCreateSnapshot,
+		toolListSnapshots,
+		toolRestoreSnapshot,
+		toolDeleteSnapshot,
 	}
 }
 
@@ -60,6 +64,14 @@ func (c *Client) Dispatch(ctx context.Context, toolName string, rawInput json.Ra
 		return c.dispatchReadFile(ctx, rawInput)
 	case "haas_write_file":
 		return c.dispatchWriteFile(ctx, rawInput)
+	case "haas_create_snapshot":
+		return c.dispatchCreateSnapshot(ctx, rawInput)
+	case "haas_list_snapshots":
+		return c.dispatchListSnapshots(ctx)
+	case "haas_restore_snapshot":
+		return c.dispatchRestoreSnapshot(ctx, rawInput)
+	case "haas_delete_snapshot":
+		return c.dispatchDeleteSnapshot(ctx, rawInput)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", toolName)
 	}
@@ -222,6 +234,74 @@ func (c *Client) dispatchWriteFile(ctx context.Context, raw json.RawMessage) (st
 	return fmt.Sprintf("File written to %s", input.Path), nil
 }
 
+func (c *Client) dispatchCreateSnapshot(ctx context.Context, raw json.RawMessage) (string, error) {
+	var input struct {
+		EnvironmentID string `json:"environment_id"`
+		Label         string `json:"label"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", fmt.Errorf("parse input: %w", err)
+	}
+	snap, err := c.CreateSnapshot(ctx, input.EnvironmentID, apitypes.CreateSnapshotRequest{Label: input.Label})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Snapshot created.\nID: %s\nEnvironment: %s\nLabel: %s\nSize: %d bytes",
+		snap.ID, snap.EnvironmentID, snap.Label, snap.Size), nil
+}
+
+func (c *Client) dispatchListSnapshots(ctx context.Context) (string, error) {
+	snaps, err := c.ListSnapshots(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(snaps) == 0 {
+		return "No snapshots found.", nil
+	}
+	data, err := json.MarshalIndent(snaps, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("encode response: %w", err)
+	}
+	return string(data), nil
+}
+
+func (c *Client) dispatchRestoreSnapshot(ctx context.Context, raw json.RawMessage) (string, error) {
+	var input struct {
+		SnapshotID    string  `json:"snapshot_id"`
+		CPU           float64 `json:"cpu"`
+		MemoryMB      int64   `json:"memory_mb"`
+		DiskMB        int64   `json:"disk_mb"`
+		NetworkPolicy string  `json:"network_policy"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", fmt.Errorf("parse input: %w", err)
+	}
+	env, err := c.RestoreSnapshot(ctx, input.SnapshotID, apitypes.CreateEnvironmentRequest{
+		CPU:           input.CPU,
+		MemoryMB:      input.MemoryMB,
+		DiskMB:        input.DiskMB,
+		NetworkPolicy: input.NetworkPolicy,
+	})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Environment restored from snapshot.\nID: %s\nStatus: %s\nImage: %s",
+		env.ID, env.Status, env.Image), nil
+}
+
+func (c *Client) dispatchDeleteSnapshot(ctx context.Context, raw json.RawMessage) (string, error) {
+	var input struct {
+		SnapshotID string `json:"snapshot_id"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", fmt.Errorf("parse input: %w", err)
+	}
+	if err := c.DeleteSnapshot(ctx, input.SnapshotID); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Snapshot %s deleted.", input.SnapshotID), nil
+}
+
 // --- tool definitions ---------------------------------------------------------
 
 // prop is a single JSON Schema property.
@@ -245,14 +325,15 @@ func schema(props map[string]prop, required ...string) json.RawMessage {
 
 var toolCreateEnvironment = ToolDefinition{
 	Name:        "haas_create_environment",
-	Description: "Create a new sandboxed Docker container environment. Returns an environment ID used in subsequent calls.",
+	Description: "Create a new sandboxed Docker container environment. Returns an environment ID used in subsequent calls. Provide either 'image' or 'snapshot_id' (not both).",
 	InputSchema: schema(map[string]prop{
-		"image":          {Type: "string", Description: "Docker image to use (e.g. 'ubuntu:22.04', 'python:3.12', 'node:20')"},
+		"image":          {Type: "string", Description: "Docker image to use (e.g. 'ubuntu:22.04', 'python:3.12', 'node:20'). Omit when restoring from a snapshot."},
+		"snapshot_id":    {Type: "string", Description: "Snapshot ID to restore from. Omit when creating a fresh environment from an image."},
 		"cpu":            {Type: "number", Description: "CPU cores to allocate (0.1–4.0, default 1.0)"},
 		"memory_mb":      {Type: "number", Description: "Memory in MB (128–8192, default 2048)"},
 		"disk_mb":        {Type: "number", Description: "Disk space in MB (default 4096)"},
 		"network_policy": {Type: "string", Description: "Network access: 'none' (isolated), 'egress-limited', or 'full' (default: 'none')"},
-	}, "image"),
+	}),
 }
 
 var toolListEnvironments = ToolDefinition{
@@ -314,4 +395,39 @@ var toolWriteFile = ToolDefinition{
 		"path":           {Type: "string", Description: "Absolute path to write (e.g. '/app/main.py')"},
 		"content":        {Type: "string", Description: "Text content to write to the file"},
 	}, "environment_id", "path", "content"),
+}
+
+var toolCreateSnapshot = ToolDefinition{
+	Name:        "haas_create_snapshot",
+	Description: "Save a snapshot of a running environment's filesystem. Snapshots capture installed packages, files, and configuration — but not running processes. Use haas_restore_snapshot to spin up a new environment from a snapshot.",
+	InputSchema: schema(map[string]prop{
+		"environment_id": {Type: "string", Description: "The environment ID to snapshot"},
+		"label":          {Type: "string", Description: "Optional human-readable label (e.g. 'before-migration', 'deps-installed')"},
+	}, "environment_id"),
+}
+
+var toolListSnapshots = ToolDefinition{
+	Name:        "haas_list_snapshots",
+	Description: "List all saved snapshots.",
+	InputSchema: schema(map[string]prop{}),
+}
+
+var toolRestoreSnapshot = ToolDefinition{
+	Name:        "haas_restore_snapshot",
+	Description: "Create a new environment restored from a snapshot. The new environment starts with the exact filesystem state from when the snapshot was taken.",
+	InputSchema: schema(map[string]prop{
+		"snapshot_id":    {Type: "string", Description: "The snapshot ID to restore from"},
+		"cpu":            {Type: "number", Description: "CPU cores to allocate (0.1–4.0, default 1.0)"},
+		"memory_mb":      {Type: "number", Description: "Memory in MB (128–8192, default 2048)"},
+		"disk_mb":        {Type: "number", Description: "Disk space in MB (default 4096)"},
+		"network_policy": {Type: "string", Description: "Network access: 'none' (isolated), 'egress-limited', or 'full' (default: 'none')"},
+	}, "snapshot_id"),
+}
+
+var toolDeleteSnapshot = ToolDefinition{
+	Name:        "haas_delete_snapshot",
+	Description: "Delete a snapshot and free its storage. This cannot be undone.",
+	InputSchema: schema(map[string]prop{
+		"snapshot_id": {Type: "string", Description: "The snapshot ID to delete"},
+	}, "snapshot_id"),
 }
