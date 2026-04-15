@@ -27,4 +27,10 @@ type Store interface {
 	// Called once per API key when using a persistent store.
 	// No-op for the in-memory store.
 	BootstrapUser(ctx context.Context, keyHash, userID string) error
+
+	// Snapshot operations
+	CreateSnapshot(ctx context.Context, snap *domain.Snapshot) error
+	GetSnapshot(ctx context.Context, id, userID string) (*domain.Snapshot, error)
+	ListSnapshots(ctx context.Context, userID string) ([]*domain.Snapshot, error)
+	DeleteSnapshot(ctx context.Context, id, userID string) error
 }

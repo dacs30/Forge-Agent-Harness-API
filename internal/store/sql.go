@@ -70,8 +70,28 @@ CREATE TABLE IF NOT EXISTS environments (
 
 const createEnvironmentsUserIDIndex = `CREATE INDEX IF NOT EXISTS idx_environments_user_id ON environments(user_id)`
 
+const createSnapshotsTable = `
+CREATE TABLE IF NOT EXISTS snapshots (
+    id             TEXT   PRIMARY KEY,
+    user_id        TEXT   NOT NULL REFERENCES users(id),
+    environment_id TEXT   NOT NULL DEFAULT '',
+    image_id       TEXT   NOT NULL,
+    label          TEXT   NOT NULL DEFAULT '',
+    size           BIGINT NOT NULL DEFAULT 0,
+    created_at     BIGINT NOT NULL
+)`
+
+const createSnapshotsUserIDIndex = `CREATE INDEX IF NOT EXISTS idx_snapshots_user_id ON snapshots(user_id)`
+
 func (s *SQLStore) migrate() error {
-	stmts := []string{createUsersTable, createAPIKeysTable, createEnvironmentsTable, createEnvironmentsUserIDIndex}
+	stmts := []string{
+		createUsersTable,
+		createAPIKeysTable,
+		createEnvironmentsTable,
+		createEnvironmentsUserIDIndex,
+		createSnapshotsTable,
+		createSnapshotsUserIDIndex,
+	}
 	if !s.isPG {
 		stmts = append([]string{"PRAGMA foreign_keys = ON"}, stmts...)
 	}
@@ -291,6 +311,97 @@ func (s *SQLStore) ListExpired(ctx context.Context) ([]*domain.Environment, erro
 	}
 	defer rows.Close()
 	return scanEnvs(rows)
+}
+
+// --- Snapshot operations -----------------------------------------------------
+
+func (s *SQLStore) CreateSnapshot(ctx context.Context, snap *domain.Snapshot) error {
+	q := s.rebind(`
+		INSERT INTO snapshots (id, user_id, environment_id, image_id, label, size, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	_, err := s.db.ExecContext(ctx, q,
+		snap.ID, snap.UserID, snap.EnvironmentID, snap.ImageID, snap.Label, snap.Size, snap.CreatedAt.Unix(),
+	)
+	return err
+}
+
+func (s *SQLStore) GetSnapshot(ctx context.Context, id, userID string) (*domain.Snapshot, error) {
+	var q string
+	var args []any
+	if userID == "" {
+		q = s.rebind(`SELECT id, user_id, environment_id, image_id, label, size, created_at FROM snapshots WHERE id = ?`)
+		args = []any{id}
+	} else {
+		q = s.rebind(`SELECT id, user_id, environment_id, image_id, label, size, created_at FROM snapshots WHERE id = ? AND user_id = ?`)
+		args = []any{id, userID}
+	}
+	row := s.db.QueryRowContext(ctx, q, args...)
+	snap, err := scanSnapshot(row)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return snap, err
+}
+
+func (s *SQLStore) ListSnapshots(ctx context.Context, userID string) ([]*domain.Snapshot, error) {
+	var q string
+	var args []any
+	base := `SELECT id, user_id, environment_id, image_id, label, size, created_at FROM snapshots`
+	if userID == "" {
+		q = base
+	} else {
+		q = s.rebind(base + ` WHERE user_id = ?`)
+		args = []any{userID}
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var snaps []*domain.Snapshot
+	for rows.Next() {
+		snap, err := scanSnapshot(rows)
+		if err != nil {
+			return nil, err
+		}
+		snaps = append(snaps, snap)
+	}
+	return snaps, rows.Err()
+}
+
+func (s *SQLStore) DeleteSnapshot(ctx context.Context, id, userID string) error {
+	var q string
+	var args []any
+	if userID == "" {
+		q = s.rebind(`DELETE FROM snapshots WHERE id = ?`)
+		args = []any{id}
+	} else {
+		q = s.rebind(`DELETE FROM snapshots WHERE id = ? AND user_id = ?`)
+		args = []any{id, userID}
+	}
+	res, err := s.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func scanSnapshot(row scanner) (*domain.Snapshot, error) {
+	var snap domain.Snapshot
+	var createdAt int64
+	err := row.Scan(&snap.ID, &snap.UserID, &snap.EnvironmentID, &snap.ImageID, &snap.Label, &snap.Size, &createdAt)
+	if err != nil {
+		return nil, err
+	}
+	snap.CreatedAt = time.Unix(createdAt, 0).UTC()
+	return &snap, nil
 }
 
 // --- helpers -----------------------------------------------------------------

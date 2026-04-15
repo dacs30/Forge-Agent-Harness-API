@@ -199,6 +199,61 @@ func (s *Server) registerTools() {
 		),
 		s.handleWriteFile,
 	)
+
+	s.mcp.AddTool(
+		mcp.NewTool("haas_create_snapshot",
+			mcp.WithDescription("Save a snapshot of a running environment's filesystem. Snapshots capture installed packages, files, and configuration — but not running processes. Use haas_restore_snapshot to spin up a new environment from a snapshot."),
+			mcp.WithString("environment_id",
+				mcp.Required(),
+				mcp.Description("The environment ID to snapshot"),
+			),
+			mcp.WithString("label",
+				mcp.Description("Optional human-readable label for the snapshot (e.g. 'before-migration', 'deps-installed')"),
+			),
+		),
+		s.handleCreateSnapshot,
+	)
+
+	s.mcp.AddTool(
+		mcp.NewTool("haas_list_snapshots",
+			mcp.WithDescription("List all saved snapshots."),
+		),
+		s.handleListSnapshots,
+	)
+
+	s.mcp.AddTool(
+		mcp.NewTool("haas_restore_snapshot",
+			mcp.WithDescription("Create a new environment restored from a snapshot. The new environment starts with the exact filesystem state from when the snapshot was taken."),
+			mcp.WithString("snapshot_id",
+				mcp.Required(),
+				mcp.Description("The snapshot ID to restore from"),
+			),
+			mcp.WithNumber("cpu",
+				mcp.Description("CPU cores to allocate (0.1–4.0, default 1.0)"),
+			),
+			mcp.WithNumber("memory_mb",
+				mcp.Description("Memory in MB to allocate (128–8192, default 2048)"),
+			),
+			mcp.WithNumber("disk_mb",
+				mcp.Description("Disk space in MB (default 4096)"),
+			),
+			mcp.WithString("network_policy",
+				mcp.Description("Network access: 'none' (isolated), 'egress-limited', or 'full' (default: 'none')"),
+			),
+		),
+		s.handleRestoreSnapshot,
+	)
+
+	s.mcp.AddTool(
+		mcp.NewTool("haas_delete_snapshot",
+			mcp.WithDescription("Delete a snapshot and free its storage. This cannot be undone."),
+			mcp.WithString("snapshot_id",
+				mcp.Required(),
+				mcp.Description("The snapshot ID to delete"),
+			),
+		),
+		s.handleDeleteSnapshot,
+	)
 }
 
 func (s *Server) registerResources() {

@@ -31,6 +31,7 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 	execHandler := NewExecHandler(s, e, logger)
 	execWSHandler := NewExecWSHandler(s, e, logger)
 	filesHandler := NewFilesHandler(s, e, logger, cfg)
+	snapshotHandler := NewSnapshotHandler(s, e, logger)
 
 	r.Route("/v1/environments", func(r chi.Router) {
 		r.Use(authMgr.Middleware())
@@ -48,7 +49,16 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 				r.Get("/content", filesHandler.Read)
 				r.Put("/content", filesHandler.Write)
 			})
+
+			r.Post("/snapshots", snapshotHandler.Create)
 		})
+	})
+
+	r.Route("/v1/snapshots", func(r chi.Router) {
+		r.Use(authMgr.Middleware())
+		r.Get("/", snapshotHandler.List)
+		r.Get("/{id}", snapshotHandler.Get)
+		r.Delete("/{id}", snapshotHandler.Delete)
 	})
 
 	return r

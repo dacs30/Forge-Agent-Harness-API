@@ -54,15 +54,21 @@ func NewDockerEngine(cfg *config.Config, logger *slog.Logger) (*DockerEngine, er
 }
 
 func (e *DockerEngine) CreateContainer(ctx context.Context, env *domain.Environment) (string, error) {
-	// Pull image
-	e.logger.Info("pulling image", "image", env.Spec.Image, "env_id", env.ID)
-	pullResp, err := e.client.ImagePull(ctx, env.Spec.Image, image.PullOptions{})
-	if err != nil {
-		return "", fmt.Errorf("image pull: %w", err)
+	// Check if the image already exists locally (e.g. snapshot images are local-only).
+	// Only pull from a registry when it is not found locally.
+	_, _, localErr := e.client.ImageInspectWithRaw(ctx, env.Spec.Image)
+	if localErr != nil {
+		e.logger.Info("pulling image", "image", env.Spec.Image, "env_id", env.ID)
+		pullResp, err := e.client.ImagePull(ctx, env.Spec.Image, image.PullOptions{})
+		if err != nil {
+			return "", fmt.Errorf("image pull: %w", err)
+		}
+		// Drain the pull response to complete the pull
+		io.Copy(io.Discard, pullResp)
+		pullResp.Close()
+	} else {
+		e.logger.Info("image found locally, skipping pull", "image", env.Spec.Image, "env_id", env.ID)
 	}
-	// Drain the pull response to complete the pull
-	io.Copy(io.Discard, pullResp)
-	pullResp.Close()
 
 	// Build container config
 	envVars := make([]string, 0, len(env.Spec.EnvVars))
@@ -451,6 +457,32 @@ func splitPath(path string) (dir, file string) {
 	}
 	file = path[idx+1:]
 	return
+}
+
+// SnapshotContainer commits the container's current filesystem state to a local
+// Docker image tagged as "haas-snapshots:{snapshotID}". Returns the image ID.
+func (e *DockerEngine) SnapshotContainer(ctx context.Context, containerID, snapshotID string) (string, error) {
+	ref := "haas-snapshots:" + snapshotID
+	resp, err := e.client.ContainerCommit(ctx, containerID, container.CommitOptions{
+		Reference: ref,
+		Pause:     true, // pause the container briefly during commit for consistency
+		Comment:   "HaaS snapshot " + snapshotID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("container commit: %w", err)
+	}
+	e.logger.Info("snapshot created", "snapshot_id", snapshotID, "image_id", resp.ID[:16], "ref", ref)
+	return resp.ID, nil
+}
+
+// DeleteSnapshotImage removes the local Docker image for a snapshot.
+func (e *DockerEngine) DeleteSnapshotImage(ctx context.Context, imageID string) error {
+	_, err := e.client.ImageRemove(ctx, imageID, image.RemoveOptions{Force: true})
+	if err != nil {
+		return fmt.Errorf("image remove: %w", err)
+	}
+	e.logger.Info("snapshot image deleted", "image_id", imageID[:16])
+	return nil
 }
 
 // DemuxDockerStream reads Docker's multiplexed stream format and calls the

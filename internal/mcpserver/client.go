@@ -223,6 +223,74 @@ func (c *haasClient) writeFile(ctx context.Context, envID, path, content string)
 	return nil
 }
 
+func (c *haasClient) createSnapshot(ctx context.Context, envID, label string) (*apitypes.Snapshot, error) {
+	body := apitypes.CreateSnapshotRequest{Label: label}
+	resp, err := c.do(ctx, http.MethodPost, "/v1/environments/"+envID+"/snapshots", body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		return nil, readAPIError(resp)
+	}
+
+	var out apitypes.Snapshot
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, nil
+}
+
+func (c *haasClient) listSnapshots(ctx context.Context) ([]*apitypes.Snapshot, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/v1/snapshots", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, readAPIError(resp)
+	}
+
+	var out []*apitypes.Snapshot
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+func (c *haasClient) deleteSnapshot(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/v1/snapshots/"+id, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		return readAPIError(resp)
+	}
+	return nil
+}
+
+func (c *haasClient) restoreSnapshot(ctx context.Context, req apitypes.CreateEnvironmentRequest) (*apitypes.CreateEnvironmentResponse, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/v1/environments", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		return nil, readAPIError(resp)
+	}
+
+	var out apitypes.CreateEnvironmentResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, nil
+}
+
 func readAPIError(resp *http.Response) error {
 	var apiErr apitypes.ErrorResponse
 	if err := json.NewDecoder(resp.Body).Decode(&apiErr); err != nil {

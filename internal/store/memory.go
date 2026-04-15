@@ -11,6 +11,7 @@ import (
 type MemoryStore struct {
 	mu          sync.RWMutex
 	envs        map[string]*domain.Environment
+	snapshots   map[string]*domain.Snapshot
 	idleTimeout time.Duration
 	maxLifetime time.Duration
 }
@@ -18,6 +19,7 @@ type MemoryStore struct {
 func NewMemoryStore(idleTimeout, maxLifetime time.Duration) *MemoryStore {
 	return &MemoryStore{
 		envs:        make(map[string]*domain.Environment),
+		snapshots:   make(map[string]*domain.Snapshot),
 		idleTimeout: idleTimeout,
 		maxLifetime: maxLifetime,
 	}
@@ -107,5 +109,52 @@ func (s *MemoryStore) ListExpired(_ context.Context) ([]*domain.Environment, err
 
 // BootstrapUser is a no-op for the in-memory store.
 func (s *MemoryStore) BootstrapUser(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (s *MemoryStore) CreateSnapshot(_ context.Context, snap *domain.Snapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshots[snap.ID] = snap
+	return nil
+}
+
+func (s *MemoryStore) GetSnapshot(_ context.Context, id, userID string) (*domain.Snapshot, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	snap, ok := s.snapshots[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if userID != "" && snap.UserID != userID {
+		return nil, ErrNotFound
+	}
+	return snap, nil
+}
+
+func (s *MemoryStore) ListSnapshots(_ context.Context, userID string) ([]*domain.Snapshot, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*domain.Snapshot, 0, len(s.snapshots))
+	for _, snap := range s.snapshots {
+		if userID != "" && snap.UserID != userID {
+			continue
+		}
+		result = append(result, snap)
+	}
+	return result, nil
+}
+
+func (s *MemoryStore) DeleteSnapshot(_ context.Context, id, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap, ok := s.snapshots[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if userID != "" && snap.UserID != userID {
+		return ErrNotFound
+	}
+	delete(s.snapshots, id)
 	return nil
 }

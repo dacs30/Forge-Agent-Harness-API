@@ -5,12 +5,13 @@ package apitypes
 import "time"
 
 type CreateEnvironmentRequest struct {
-	Image         string            `json:"image"`
+	Image         string            `json:"image,omitempty"`
 	CPU           float64           `json:"cpu,omitempty"`
 	MemoryMB      int64             `json:"memory_mb,omitempty"`
 	DiskMB        int64             `json:"disk_mb,omitempty"`
 	NetworkPolicy string            `json:"network_policy,omitempty"`
 	EnvVars       map[string]string `json:"env_vars,omitempty"`
+	SnapshotID    string            `json:"snapshot_id,omitempty"`
 }
 
 type CreateEnvironmentResponse struct {
@@ -71,4 +72,19 @@ type ExecResult struct {
 	Stdout   string
 	Stderr   string
 	ExitCode string
+}
+
+// CreateSnapshotRequest is the request body for POST /v1/environments/{id}/snapshots.
+type CreateSnapshotRequest struct {
+	Label string `json:"label,omitempty"`
+}
+
+// Snapshot is the snapshot resource returned by the API.
+type Snapshot struct {
+	ID            string    `json:"id"`
+	EnvironmentID string    `json:"environment_id"`
+	ImageID       string    `json:"image_id"`
+	Label         string    `json:"label"`
+	Size          int64     `json:"size"`
+	CreatedAt     time.Time `json:"created_at"`
 }

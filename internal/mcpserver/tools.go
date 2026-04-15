@@ -183,6 +183,79 @@ func (s *Server) handleReadFile(ctx context.Context, req mcp.CallToolRequest) (*
 	return mcp.NewToolResultText(string(content)), nil
 }
 
+func (s *Server) handleCreateSnapshot(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	envID, err := req.RequireString("environment_id")
+	if err != nil {
+		return mcp.NewToolResultError("environment_id is required"), nil
+	}
+	label := req.GetString("label", "")
+
+	snap, err := s.client.createSnapshot(ctx, envID, label)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to create snapshot: %s", err)), nil
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf(
+		"Snapshot created.\nID: %s\nEnvironment: %s\nLabel: %s\nSize: %d bytes",
+		snap.ID, snap.EnvironmentID, snap.Label, snap.Size,
+	)), nil
+}
+
+func (s *Server) handleListSnapshots(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	snaps, err := s.client.listSnapshots(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to list snapshots: %s", err)), nil
+	}
+
+	if len(snaps) == 0 {
+		return mcp.NewToolResultText("No snapshots found."), nil
+	}
+
+	data, err := json.MarshalIndent(snaps, "", "  ")
+	if err != nil {
+		return mcp.NewToolResultError("failed to encode snapshots"), nil
+	}
+	return mcp.NewToolResultText(string(data)), nil
+}
+
+func (s *Server) handleDeleteSnapshot(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id, err := req.RequireString("snapshot_id")
+	if err != nil {
+		return mcp.NewToolResultError("snapshot_id is required"), nil
+	}
+
+	if err := s.client.deleteSnapshot(ctx, id); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to delete snapshot: %s", err)), nil
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Snapshot %s deleted.", id)), nil
+}
+
+func (s *Server) handleRestoreSnapshot(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	snapID, err := req.RequireString("snapshot_id")
+	if err != nil {
+		return mcp.NewToolResultError("snapshot_id is required"), nil
+	}
+
+	createReq := apitypes.CreateEnvironmentRequest{
+		SnapshotID:    snapID,
+		CPU:           req.GetFloat("cpu", 0),
+		MemoryMB:      int64(req.GetFloat("memory_mb", 0)),
+		DiskMB:        int64(req.GetFloat("disk_mb", 0)),
+		NetworkPolicy: req.GetString("network_policy", ""),
+	}
+
+	env, err := s.client.restoreSnapshot(ctx, createReq)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to restore snapshot: %s", err)), nil
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf(
+		"Environment restored from snapshot.\nID: %s\nStatus: %s\nImage: %s",
+		env.ID, env.Status, env.Image,
+	)), nil
+}
+
 func (s *Server) handleWriteFile(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	envID, err := req.RequireString("environment_id")
 	if err != nil {

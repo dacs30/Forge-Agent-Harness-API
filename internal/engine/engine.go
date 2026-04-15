@@ -47,4 +47,11 @@ type Engine interface {
 
 	// WriteFile writes content to a file inside the container.
 	WriteFile(ctx context.Context, containerID string, path string, content io.Reader) error
+
+	// SnapshotContainer commits the container's filesystem to a local Docker image
+	// tagged as "haas-snapshots:{snapshotID}". Returns the Docker image ID.
+	SnapshotContainer(ctx context.Context, containerID, snapshotID string) (imageID string, err error)
+
+	// DeleteSnapshotImage removes the local Docker image for a snapshot.
+	DeleteSnapshotImage(ctx context.Context, imageID string) error
 }

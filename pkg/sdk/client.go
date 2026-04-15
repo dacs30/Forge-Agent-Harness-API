@@ -237,6 +237,85 @@ func (c *Client) WriteFile(ctx context.Context, envID, path, content string) err
 	return nil
 }
 
+// CreateSnapshot snapshots a running environment's filesystem and returns the snapshot.
+func (c *Client) CreateSnapshot(ctx context.Context, envID string, req apitypes.CreateSnapshotRequest) (*apitypes.Snapshot, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/v1/environments/"+envID+"/snapshots", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		return nil, readAPIError(resp)
+	}
+
+	var out apitypes.Snapshot
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, nil
+}
+
+// ListSnapshots returns all snapshots for the authenticated user.
+func (c *Client) ListSnapshots(ctx context.Context) ([]*apitypes.Snapshot, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/v1/snapshots", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, readAPIError(resp)
+	}
+
+	var out []*apitypes.Snapshot
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// GetSnapshot returns a single snapshot by ID.
+func (c *Client) GetSnapshot(ctx context.Context, id string) (*apitypes.Snapshot, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/v1/snapshots/"+id, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, readAPIError(resp)
+	}
+
+	var out apitypes.Snapshot
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, nil
+}
+
+// DeleteSnapshot removes a snapshot and its underlying Docker image.
+func (c *Client) DeleteSnapshot(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/v1/snapshots/"+id, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		return readAPIError(resp)
+	}
+	return nil
+}
+
+// RestoreSnapshot creates a new environment from a snapshot.
+// The snapshot_id field is set automatically; all other fields follow the same
+// rules as CreateEnvironment (CPU/memory/network_policy defaults apply).
+func (c *Client) RestoreSnapshot(ctx context.Context, snapshotID string, req apitypes.CreateEnvironmentRequest) (*apitypes.CreateEnvironmentResponse, error) {
+	req.SnapshotID = snapshotID
+	return c.CreateEnvironment(ctx, req)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
 	var bodyReader io.Reader
 	if body != nil {

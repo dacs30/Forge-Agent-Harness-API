@@ -35,6 +35,7 @@ type CreateEnvironmentRequest struct {
 	DiskMB        int64             `json:"disk_mb"`
 	NetworkPolicy string            `json:"network_policy"`
 	EnvVars       map[string]string `json:"env_vars"`
+	SnapshotID    string            `json:"snapshot_id"`
 }
 
 type CreateEnvironmentResponse struct {
@@ -50,14 +51,30 @@ func (h *EnvironmentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Image == "" {
-		writeError(w, http.StatusBadRequest, "image is required")
-		return
-	}
+	userID := auth.UserIDFromContext(r.Context())
 
-	if len(h.config.AllowedImages) > 0 && !imageAllowed(req.Image, h.config.AllowedImages) {
-		writeError(w, http.StatusForbidden, "image not allowed: "+req.Image)
-		return
+	// Snapshot restore: look up snapshot and use its image tag as the base image.
+	// Allowlist check is skipped — the snapshot was created from an already-trusted image.
+	if req.SnapshotID != "" {
+		snap, err := h.store.GetSnapshot(r.Context(), req.SnapshotID, userID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "snapshot not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to get snapshot")
+			return
+		}
+		req.Image = snap.ImageRef()
+	} else {
+		if req.Image == "" {
+			writeError(w, http.StatusBadRequest, "image is required when snapshot_id is not set")
+			return
+		}
+		if len(h.config.AllowedImages) > 0 && !imageAllowed(req.Image, h.config.AllowedImages) {
+			writeError(w, http.StatusForbidden, "image not allowed: "+req.Image)
+			return
+		}
 	}
 
 	// Apply defaults
@@ -90,7 +107,6 @@ func (h *EnvironmentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID := auth.UserIDFromContext(r.Context())
 	now := time.Now()
 	env := &domain.Environment{
 		ID:     "env_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:12],

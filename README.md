@@ -491,7 +491,7 @@ haas/
 - [x] **Auth & API keys** — Bearer token authentication via `HAAS_API_KEYS`
 - [ ] **Egress firewall** — Proper iptables rules for `egress-limited` network policy
 - [x] **WebSocket exec** — Interactive terminal sessions over WebSocket
-- [ ] **Container snapshots** — Save and restore environment state
+- [x] **Container snapshots** — Save and restore environment state
 
 ---
 
