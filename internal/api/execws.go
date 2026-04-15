@@ -18,6 +18,25 @@ import (
 	"haas/internal/store"
 )
 
+const (
+	// wsMaxMessageBytes caps incoming WebSocket frame size. Input frames
+	// (keystrokes, resize events) are tiny JSON objects; 32 KB is generous.
+	// Frames exceeding this limit cause gorilla to close the connection with 1009.
+	wsMaxMessageBytes = 32 * 1024
+
+	// wsPongWait is how long the server waits for a pong before declaring the
+	// client dead and closing the connection.
+	wsPongWait = 60 * time.Second
+
+	// wsPingInterval is how often the server sends a ping. Must be less than
+	// wsPongWait so the client has time to reply before the deadline fires.
+	wsPingInterval = (wsPongWait * 9) / 10 // 54 s
+
+	// wsWriteWait is the per-write deadline. A stuck or slow client will be
+	// disconnected after this many seconds rather than blocking indefinitely.
+	wsWriteWait = 10 * time.Second
+)
+
 var upgrader = websocket.Upgrader{
 	// Allow all origins — callers are authenticated via Bearer token, not origin.
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -82,7 +101,16 @@ func (h *ExecWSHandler) ExecWS(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("websocket upgrade failed", "error", err, "env_id", id)
 		return // upgrader already wrote the HTTP error
 	}
-	defer conn.Close()
+
+	// Resource limits: cap incoming frame size and enforce a read deadline
+	// that is reset by each pong. This prevents:
+	//   • Memory exhaustion from huge frames (SetReadLimit)
+	//   • Connections held open indefinitely by silent clients (pong deadline)
+	conn.SetReadLimit(wsMaxMessageBytes)
+	conn.SetReadDeadline(time.Now().Add(wsPongWait)) //nolint:errcheck
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	})
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -96,19 +124,76 @@ func (h *ExecWSHandler) ExecWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.Error("exec interactive failed", "error", err, "env_id", id)
 		wsSend(conn, nil, domain.WSOutputMessage{Stream: "error", Data: "failed to start session"})
+		conn.Close()
 		return
 	}
-	defer session.Close()
 
 	h.logger.Info("websocket exec started", "env_id", id, "command", cmd)
 
+	// closeAll shuts down both the exec session and the WebSocket connection
+	// exactly once, regardless of which side exits first.
+	//
+	// Why both must be closed together:
+	//   • Closing session unblocks session.Reader().Read() in the Docker→WS goroutine.
+	//   • Closing conn   unblocks conn.ReadMessage()      in the WS→Docker goroutine.
+	// Without this, whichever goroutine exits first leaves the other stuck
+	// forever on a blocking read, and wg.Wait() never returns.
+	var closeOnce sync.Once
+	closeAll := func() {
+		closeOnce.Do(func() {
+			cancel()
+			session.Close()
+			conn.Close()
+		})
+	}
+	defer closeAll()
+
+	// mu guards all WebSocket writes — gorilla requires single-writer.
+	var mu sync.Mutex
+
+	// Ping goroutine: sends periodic pings so the pong-based read deadline
+	// does not fire on otherwise-idle-but-alive connections.
+	pingTicker := time.NewTicker(wsPingInterval)
+	defer pingTicker.Stop()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-pingTicker.C:
+				// WriteControl is safe to call concurrently with WriteMessage.
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteWait)); err != nil {
+					closeAll()
+					return
+				}
+			}
+		}
+	}()
+
+	// Keep-alive: update LastUsedAt every 30 s so the reaper does not kill the
+	// container while a terminal session is in progress. Without this, any
+	// session longer than the idle timeout (default 10 min) would be reaped.
+	keepAlive := time.NewTicker(30 * time.Second)
+	defer keepAlive.Stop()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-keepAlive.C:
+				env.LastUsedAt = time.Now()
+				if err := h.store.Update(context.Background(), env); err != nil {
+					h.logger.Warn("failed to refresh last-used during ws session", "error", err, "env_id", id)
+				}
+			}
+		}
+	}()
+
+	// Record initial session start.
 	env.LastUsedAt = time.Now()
 	if err := h.store.Update(r.Context(), env); err != nil {
 		h.logger.Error("failed to update last used time", "error", err, "env_id", id)
 	}
-
-	// mu guards all WebSocket writes — gorilla requires single-writer.
-	var mu sync.Mutex
 
 	var wg sync.WaitGroup
 
@@ -116,7 +201,7 @@ func (h *ExecWSHandler) ExecWS(w http.ResponseWriter, r *http.Request) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer cancel()
+		defer closeAll() // unblocks conn.ReadMessage() in the peer goroutine
 
 		buf := make([]byte, 32*1024)
 		for {
@@ -132,8 +217,11 @@ func (h *ExecWSHandler) ExecWS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Fetch exit code once the process finishes.
-		exitCode, err := h.engine.ExecExitCode(ctx, session.ExecID())
+		// Fetch exit code once the process finishes. Use a fresh context because
+		// the session context may already be cancelled (e.g. client disconnected).
+		exitCtx, exitCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer exitCancel()
+		exitCode, err := h.engine.ExecExitCode(exitCtx, session.ExecID())
 		if err != nil {
 			h.logger.Error("failed to get exit code", "error", err, "env_id", id)
 			exitCode = -1
@@ -145,7 +233,7 @@ func (h *ExecWSHandler) ExecWS(w http.ResponseWriter, r *http.Request) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer cancel()
+		defer closeAll() // unblocks session.Reader().Read() in the peer goroutine
 
 		for {
 			_, raw, err := conn.ReadMessage()
@@ -175,13 +263,16 @@ func (h *ExecWSHandler) ExecWS(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("websocket exec finished", "env_id", id)
 }
 
-// wsSend serialises msg as JSON and writes it as a WebSocket text frame.
-// mu may be nil when called from a single goroutine.
+// wsSend serialises msg as JSON, sets a per-write deadline, and writes it as a
+// WebSocket text frame. mu may be nil when called from a single goroutine.
+// The write deadline prevents a slow or stuck client from blocking the goroutine
+// indefinitely.
 func wsSend(conn *websocket.Conn, mu *sync.Mutex, msg domain.WSOutputMessage) error {
 	data, _ := json.Marshal(msg)
 	if mu != nil {
 		mu.Lock()
 		defer mu.Unlock()
 	}
+	conn.SetWriteDeadline(time.Now().Add(wsWriteWait)) //nolint:errcheck
 	return conn.WriteMessage(websocket.TextMessage, data)
 }
