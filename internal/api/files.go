@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime"
@@ -19,6 +20,16 @@ import (
 	"haas/internal/engine"
 	"haas/internal/store"
 )
+
+// sanitizePath resolves traversal sequences by forcing the path to be rooted at
+// "/" before cleaning, so "../../etc/passwd" becomes "/etc/passwd" and can
+// never escape the container's filesystem root.
+func sanitizePath(raw string) (string, error) {
+	if strings.ContainsAny(raw, "\x00\r\n") {
+		return "", fmt.Errorf("path contains invalid characters")
+	}
+	return filepath.Clean("/" + raw), nil
+}
 
 type FilesHandler struct {
 	store  store.Store
@@ -59,9 +70,14 @@ func (h *FilesHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	path := r.URL.Query().Get("path")
-	if path == "" {
-		path = "/"
+	raw := r.URL.Query().Get("path")
+	if raw == "" {
+		raw = "/"
+	}
+	path, err := sanitizePath(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid path")
+		return
 	}
 
 	files, err := h.engine.ListFiles(r.Context(), env.ContainerID, path)
@@ -85,9 +101,14 @@ func (h *FilesHandler) Read(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	path := r.URL.Query().Get("path")
-	if path == "" {
+	raw := r.URL.Query().Get("path")
+	if raw == "" {
 		writeError(w, http.StatusBadRequest, "path query parameter is required")
+		return
+	}
+	path, err := sanitizePath(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid path")
 		return
 	}
 
@@ -104,13 +125,13 @@ func (h *FilesHandler) Read(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to update environment last used time", "error", err, "env_id", env.ID)
 	}
 
-	fileName := path[strings.LastIndex(path, "/")+1:]
+	fileName := filepath.Base(path)
 	contentType := mime.TypeByExtension(filepath.Ext(fileName))
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Disposition", "attachment; filename=\""+fileName+"\"")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": fileName}))
 	io.Copy(w, reader)
 }
 
@@ -120,9 +141,14 @@ func (h *FilesHandler) Write(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	path := r.URL.Query().Get("path")
-	if path == "" {
+	raw := r.URL.Query().Get("path")
+	if raw == "" {
 		writeError(w, http.StatusBadRequest, "path query parameter is required")
+		return
+	}
+	path, err := sanitizePath(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid path")
 		return
 	}
 
