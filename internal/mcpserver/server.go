@@ -33,12 +33,22 @@ func (s *Server) ServeStdio() error {
 // ServeSSE starts the MCP server over HTTP/SSE on the given address.
 // baseURL is the public URL clients will use to reach this server (e.g. the ngrok URL).
 // If baseURL is empty it falls back to http://<addr>.
-func (s *Server) ServeSSE(addr, baseURL string) error {
+// If apiKeys is non-empty, requests must include a valid Authorization: Bearer <key> header.
+func (s *Server) ServeSSE(addr, baseURL string, apiKeys []string) error {
 	if baseURL == "" {
 		baseURL = "http://" + addr
 	}
 	sse := server.NewSSEServer(s.mcp, server.WithBaseURL(baseURL))
-	return sse.Start(addr)
+
+	mux := http.NewServeMux()
+	mux.Handle("/sse", sse.SSEHandler())
+	mux.Handle("/message", sse.MessageHandler())
+
+	var handler http.Handler = mux
+	if len(apiKeys) > 0 {
+		handler = bearerAuthMiddleware(apiKeys, mux)
+	}
+	return http.ListenAndServe(addr, handler)
 }
 
 // ServeStreamableHTTP starts the MCP server using the Streamable HTTP transport

@@ -50,7 +50,7 @@ func main() {
 		}
 		publicURL := os.Getenv("MCP_PUBLIC_URL")
 		logger.Info("starting haas MCP server (SSE)", "addr", addr, "public_url", publicURL, "haas_url", haasURL)
-		if err := s.ServeSSE(addr, publicURL); err != nil {
+		if err := s.ServeSSE(addr, publicURL, mcpKeys); err != nil {
 			logger.Error("MCP SSE server error", "error", err)
 			os.Exit(1)
 		}
