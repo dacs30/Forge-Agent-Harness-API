@@ -77,8 +77,9 @@ func (r *Reaper) reap() {
 
 		if env.ContainerID != "" {
 			if err := r.engine.StopContainer(ctx, env.ContainerID); err != nil {
-				r.logger.Error("failed to stop container during reap", "error", err, "env_id", env.ID)
-				continue
+				// Container may already be gone (OOM-killed, manual removal, etc.).
+				// Log and proceed so the store record is always cleaned up.
+				r.logger.Warn("failed to stop container during reap (proceeding with store delete)", "error", err, "env_id", env.ID)
 			}
 		}
 
