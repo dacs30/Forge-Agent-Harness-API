@@ -1,6 +1,9 @@
 package mcpserver
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"net/http"
 	"strings"
 
@@ -85,10 +88,11 @@ func (s *Server) ServeStreamableHTTP(addr string, apiKeys []string) error {
 }
 
 func bearerAuthMiddleware(apiKeys []string, next http.Handler) http.Handler {
-	keySet := make(map[string]struct{}, len(apiKeys))
+	hashes := make([][]byte, 0, len(apiKeys))
 	for _, k := range apiKeys {
 		if k != "" {
-			keySet[k] = struct{}{}
+			h := sha256.Sum256([]byte(k))
+			hashes = append(hashes, []byte(hex.EncodeToString(h[:])))
 		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +102,16 @@ func bearerAuthMiddleware(apiKeys []string, next http.Handler) http.Handler {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
-		if _, ok := keySet[token]; !ok {
+		th := sha256.Sum256([]byte(token))
+		candidate := []byte(hex.EncodeToString(th[:]))
+		ok := false
+		for _, h := range hashes {
+			if subtle.ConstantTimeCompare(h, candidate) == 1 {
+				ok = true
+				break
+			}
+		}
+		if !ok {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
