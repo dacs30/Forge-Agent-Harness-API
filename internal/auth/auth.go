@@ -15,7 +15,10 @@ import (
 
 type contextKey string
 
-const userIDKey contextKey = "user_id"
+const (
+	userIDKey   contextKey = "user_id"
+	tenantIDKey contextKey = "tenant_id"
+)
 
 // haasNamespace is a fixed UUID used as the namespace when deriving user IDs via UUID v5.
 var haasNamespace = uuid.MustParse("f47ac10b-58cc-4372-a567-0e02b2c3d479")
@@ -70,29 +73,57 @@ func (m *Manager) Entries() []Entry {
 }
 
 // Middleware authenticates requests via Bearer token and injects the resolved
-// userID into the request context. Rejects unknown keys with 401.
+// tenantID and effectiveUserID into the request context. Rejects unknown keys with 401.
+//
+// If the request carries an X-Haas-User-ID header, the effective userID is derived
+// from (tenantID, headerValue) so containers are isolated per end-user within the
+// tenant. Without the header, effectiveUserID equals tenantID (backward-compatible).
 func (m *Manager) Middleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			userID, ok := m.UserID(token)
+			tenantID, ok := m.UserID(token)
 			if !ok {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
 				w.Write([]byte(`{"error":"invalid or missing API key","code":401}`)) //nolint:errcheck
 				return
 			}
-			ctx := context.WithValue(r.Context(), userIDKey, userID)
+
+			effectiveUserID := tenantID
+			// Trim whitespace so "alice" and " alice " are the same user.
+			// Case is preserved — callers are responsible for consistent casing.
+			if externalUserID := strings.TrimSpace(r.Header.Get("X-Haas-User-ID")); externalUserID != "" {
+				effectiveUserID = deriveEndUserID(tenantID, externalUserID)
+			}
+
+			ctx := context.WithValue(r.Context(), tenantIDKey, tenantID)
+			ctx = context.WithValue(ctx, userIDKey, effectiveUserID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// UserIDFromContext returns the authenticated user ID stored in the context.
-// Returns an empty string if not set (should never happen on authenticated routes).
+// UserIDFromContext returns the effective (possibly end-user-scoped) user ID from
+// the request context. On authenticated routes this is always set.
 func UserIDFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(userIDKey).(string)
 	return v
+}
+
+// TenantIDFromContext returns the API-key owner's user ID (the tenant) from context.
+// Equal to UserIDFromContext when no X-Haas-User-ID header was provided.
+func TenantIDFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(tenantIDKey).(string)
+	return v
+}
+
+// deriveEndUserID derives a stable, tenant-scoped UUID for an external user identifier.
+// Using the tenant's UUID as the namespace means two different tenants with the same
+// externalUserID always get different scoped UUIDs.
+func deriveEndUserID(tenantID, externalUserID string) string {
+	tenantUUID := uuid.MustParse(tenantID)
+	return uuid.NewSHA1(tenantUUID, []byte(externalUserID)).String()
 }
 
 // HashKey returns the hex-encoded SHA-256 hash of a raw API key.

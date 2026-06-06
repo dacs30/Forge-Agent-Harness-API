@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
 const createEnvironmentsTable = `
 CREATE TABLE IF NOT EXISTS environments (
     id                  TEXT   PRIMARY KEY,
-    user_id             TEXT   NOT NULL DEFAULT '' REFERENCES users(id),
+    user_id             TEXT   NOT NULL DEFAULT '',
+    tenant_id           TEXT   NOT NULL DEFAULT '',
     status              TEXT   NOT NULL,
     container_id        TEXT   NOT NULL DEFAULT '',
     created_at          BIGINT NOT NULL,
@@ -69,11 +70,13 @@ CREATE TABLE IF NOT EXISTS environments (
 )`
 
 const createEnvironmentsUserIDIndex = `CREATE INDEX IF NOT EXISTS idx_environments_user_id ON environments(user_id)`
+const createEnvironmentsTenantIDIndex = `CREATE INDEX IF NOT EXISTS idx_environments_tenant_id ON environments(tenant_id)`
 
 const createSnapshotsTable = `
 CREATE TABLE IF NOT EXISTS snapshots (
     id             TEXT   PRIMARY KEY,
-    user_id        TEXT   NOT NULL REFERENCES users(id),
+    user_id        TEXT   NOT NULL DEFAULT '',
+    tenant_id      TEXT   NOT NULL DEFAULT '',
     environment_id TEXT   NOT NULL DEFAULT '',
     image_id       TEXT   NOT NULL,
     label          TEXT   NOT NULL DEFAULT '',
@@ -82,26 +85,70 @@ CREATE TABLE IF NOT EXISTS snapshots (
 )`
 
 const createSnapshotsUserIDIndex = `CREATE INDEX IF NOT EXISTS idx_snapshots_user_id ON snapshots(user_id)`
+const createSnapshotsTenantIDIndex = `CREATE INDEX IF NOT EXISTS idx_snapshots_tenant_id ON snapshots(tenant_id)`
 
 func (s *SQLStore) migrate() error {
-	stmts := []string{
+	// Phase 1: create tables (no-op if they already exist).
+	tablestmts := []string{
 		createUsersTable,
 		createAPIKeysTable,
 		createEnvironmentsTable,
-		createEnvironmentsUserIDIndex,
 		createSnapshotsTable,
-		createSnapshotsUserIDIndex,
 	}
 	if !s.isPG {
-		stmts = append([]string{"PRAGMA foreign_keys = ON"}, stmts...)
+		tablestmts = append([]string{"PRAGMA foreign_keys = ON"}, tablestmts...)
 	}
-	for _, stmt := range stmts {
+	for _, stmt := range tablestmts {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return err
 		}
 	}
-	// Safe migration: add user_id to existing environments tables from before multi-tenancy.
-	return s.addColumnIfMissing("environments", "user_id", "TEXT NOT NULL DEFAULT ''")
+
+	// Phase 2: add any columns that are missing on pre-existing databases.
+	// This MUST happen before index creation so the columns exist when indexed.
+	for _, col := range []struct{ table, column, def string }{
+		{"environments", "user_id", "TEXT NOT NULL DEFAULT ''"},
+		{"environments", "tenant_id", "TEXT NOT NULL DEFAULT ''"},
+		{"snapshots", "tenant_id", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := s.addColumnIfMissing(col.table, col.column, col.def); err != nil {
+			return err
+		}
+	}
+
+	// Phase 3: create indexes (columns are guaranteed to exist now).
+	for _, stmt := range []string{
+		createEnvironmentsUserIDIndex,
+		createEnvironmentsTenantIDIndex,
+		createSnapshotsUserIDIndex,
+		createSnapshotsTenantIDIndex,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+
+	// Phase 4: backfill tenant_id from user_id for rows that predate this column.
+	for _, table := range []string{"environments", "snapshots"} {
+		if _, err := s.db.Exec(s.rebind("UPDATE " + table + " SET tenant_id = user_id WHERE tenant_id = ''")); err != nil {
+			return err
+		}
+	}
+
+	// Phase 5 (PostgreSQL only): drop the FK on user_id so end-user derived UUIDs
+	// (which are not in the users table) can be stored without a violation.
+	if s.isPG {
+		for _, stmt := range []string{
+			"ALTER TABLE environments DROP CONSTRAINT IF EXISTS environments_user_id_fkey",
+			"ALTER TABLE snapshots DROP CONSTRAINT IF EXISTS snapshots_user_id_fkey",
+		} {
+			if _, err := s.db.Exec(stmt); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // addColumnIfMissing adds a column to a table only if it does not already exist.
@@ -178,11 +225,11 @@ func (s *SQLStore) Create(ctx context.Context, env *domain.Environment) error {
 	}
 	q := s.rebind(`
 		INSERT INTO environments
-			(id, user_id, status, container_id, created_at, last_used_at, expires_at,
+			(id, user_id, tenant_id, status, container_id, created_at, last_used_at, expires_at,
 			 spec_image, spec_cpu, spec_memory_mb, spec_disk_mb, spec_network_policy, spec_env_vars)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	_, err = s.db.ExecContext(ctx, q,
-		env.ID, env.UserID, string(env.Status), env.ContainerID,
+		env.ID, env.UserID, env.TenantID, string(env.Status), env.ContainerID,
 		env.CreatedAt.Unix(), env.LastUsedAt.Unix(), env.ExpiresAt.Unix(),
 		env.Spec.Image, env.Spec.CPU, env.Spec.MemoryMB, env.Spec.DiskMB,
 		string(env.Spec.NetworkPolicy), envVars,
@@ -197,12 +244,12 @@ func (s *SQLStore) Get(ctx context.Context, id, userID string) (*domain.Environm
 		args []any
 	)
 	if userID == "" {
-		q = s.rebind(`SELECT id, user_id, status, container_id, created_at, last_used_at, expires_at,
+		q = s.rebind(`SELECT id, user_id, tenant_id, status, container_id, created_at, last_used_at, expires_at,
 			spec_image, spec_cpu, spec_memory_mb, spec_disk_mb, spec_network_policy, spec_env_vars
 			FROM environments WHERE id = ?`)
 		args = []any{id}
 	} else {
-		q = s.rebind(`SELECT id, user_id, status, container_id, created_at, last_used_at, expires_at,
+		q = s.rebind(`SELECT id, user_id, tenant_id, status, container_id, created_at, last_used_at, expires_at,
 			spec_image, spec_cpu, spec_memory_mb, spec_disk_mb, spec_network_policy, spec_env_vars
 			FROM environments WHERE id = ? AND user_id = ?`)
 		args = []any{id, userID}
@@ -271,13 +318,13 @@ func (s *SQLStore) Delete(ctx context.Context, id, userID string) error {
 	return nil
 }
 
-// List returns environments. If userID is non-empty, only that tenant's environments are returned.
+// List returns environments. If userID is non-empty, only that user's environments are returned.
 func (s *SQLStore) List(ctx context.Context, userID string) ([]*domain.Environment, error) {
 	var (
 		q    string
 		args []any
 	)
-	base := `SELECT id, user_id, status, container_id, created_at, last_used_at, expires_at,
+	base := `SELECT id, user_id, tenant_id, status, container_id, created_at, last_used_at, expires_at,
 		spec_image, spec_cpu, spec_memory_mb, spec_disk_mb, spec_network_policy, spec_env_vars
 		FROM environments`
 	if userID == "" {
@@ -294,13 +341,26 @@ func (s *SQLStore) List(ctx context.Context, userID string) ([]*domain.Environme
 	return scanEnvs(rows)
 }
 
+// ListByTenant returns all environments for a tenant across all end-users.
+func (s *SQLStore) ListByTenant(ctx context.Context, tenantID string) ([]*domain.Environment, error) {
+	q := s.rebind(`SELECT id, user_id, tenant_id, status, container_id, created_at, last_used_at, expires_at,
+		spec_image, spec_cpu, spec_memory_mb, spec_disk_mb, spec_network_policy, spec_env_vars
+		FROM environments WHERE tenant_id = ?`)
+	rows, err := s.db.QueryContext(ctx, q, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanEnvs(rows)
+}
+
 func (s *SQLStore) ListExpired(ctx context.Context) ([]*domain.Environment, error) {
 	now := time.Now()
 	idleCutoff := now.Add(-s.idleTimeout).Unix()
 	expiryCutoff := now.Unix()
 
 	q := s.rebind(`
-		SELECT id, user_id, status, container_id, created_at, last_used_at, expires_at,
+		SELECT id, user_id, tenant_id, status, container_id, created_at, last_used_at, expires_at,
 			spec_image, spec_cpu, spec_memory_mb, spec_disk_mb, spec_network_policy, spec_env_vars
 		FROM environments
 		WHERE status NOT IN ('stopped', 'destroyed')
@@ -317,10 +377,10 @@ func (s *SQLStore) ListExpired(ctx context.Context) ([]*domain.Environment, erro
 
 func (s *SQLStore) CreateSnapshot(ctx context.Context, snap *domain.Snapshot) error {
 	q := s.rebind(`
-		INSERT INTO snapshots (id, user_id, environment_id, image_id, label, size, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`)
+		INSERT INTO snapshots (id, user_id, tenant_id, environment_id, image_id, label, size, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 	_, err := s.db.ExecContext(ctx, q,
-		snap.ID, snap.UserID, snap.EnvironmentID, snap.ImageID, snap.Label, snap.Size, snap.CreatedAt.Unix(),
+		snap.ID, snap.UserID, snap.TenantID, snap.EnvironmentID, snap.ImageID, snap.Label, snap.Size, snap.CreatedAt.Unix(),
 	)
 	return err
 }
@@ -329,10 +389,10 @@ func (s *SQLStore) GetSnapshot(ctx context.Context, id, userID string) (*domain.
 	var q string
 	var args []any
 	if userID == "" {
-		q = s.rebind(`SELECT id, user_id, environment_id, image_id, label, size, created_at FROM snapshots WHERE id = ?`)
+		q = s.rebind(`SELECT id, user_id, tenant_id, environment_id, image_id, label, size, created_at FROM snapshots WHERE id = ?`)
 		args = []any{id}
 	} else {
-		q = s.rebind(`SELECT id, user_id, environment_id, image_id, label, size, created_at FROM snapshots WHERE id = ? AND user_id = ?`)
+		q = s.rebind(`SELECT id, user_id, tenant_id, environment_id, image_id, label, size, created_at FROM snapshots WHERE id = ? AND user_id = ?`)
 		args = []any{id, userID}
 	}
 	row := s.db.QueryRowContext(ctx, q, args...)
@@ -346,7 +406,7 @@ func (s *SQLStore) GetSnapshot(ctx context.Context, id, userID string) (*domain.
 func (s *SQLStore) ListSnapshots(ctx context.Context, userID string) ([]*domain.Snapshot, error) {
 	var q string
 	var args []any
-	base := `SELECT id, user_id, environment_id, image_id, label, size, created_at FROM snapshots`
+	base := `SELECT id, user_id, tenant_id, environment_id, image_id, label, size, created_at FROM snapshots`
 	if userID == "" {
 		q = base
 	} else {
@@ -354,6 +414,25 @@ func (s *SQLStore) ListSnapshots(ctx context.Context, userID string) ([]*domain.
 		args = []any{userID}
 	}
 	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var snaps []*domain.Snapshot
+	for rows.Next() {
+		snap, err := scanSnapshot(rows)
+		if err != nil {
+			return nil, err
+		}
+		snaps = append(snaps, snap)
+	}
+	return snaps, rows.Err()
+}
+
+// ListSnapshotsByTenant returns all snapshots for a tenant across all end-users.
+func (s *SQLStore) ListSnapshotsByTenant(ctx context.Context, tenantID string) ([]*domain.Snapshot, error) {
+	q := s.rebind(`SELECT id, user_id, tenant_id, environment_id, image_id, label, size, created_at FROM snapshots WHERE tenant_id = ?`)
+	rows, err := s.db.QueryContext(ctx, q, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -396,7 +475,7 @@ func (s *SQLStore) DeleteSnapshot(ctx context.Context, id, userID string) error 
 func scanSnapshot(row scanner) (*domain.Snapshot, error) {
 	var snap domain.Snapshot
 	var createdAt int64
-	err := row.Scan(&snap.ID, &snap.UserID, &snap.EnvironmentID, &snap.ImageID, &snap.Label, &snap.Size, &createdAt)
+	err := row.Scan(&snap.ID, &snap.UserID, &snap.TenantID, &snap.EnvironmentID, &snap.ImageID, &snap.Label, &snap.Size, &createdAt)
 	if err != nil {
 		return nil, err
 	}
@@ -445,7 +524,7 @@ func scanEnv(row scanner) (*domain.Environment, error) {
 		envVarsJSON   string
 	)
 	err := row.Scan(
-		&env.ID, &env.UserID, &status, &env.ContainerID,
+		&env.ID, &env.UserID, &env.TenantID, &status, &env.ContainerID,
 		&createdAt, &lastUsedAt, &expiresAt,
 		&env.Spec.Image, &env.Spec.CPU, &env.Spec.MemoryMB, &env.Spec.DiskMB,
 		&networkPolicy, &envVarsJSON,

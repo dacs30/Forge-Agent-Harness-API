@@ -219,6 +219,168 @@ func TestSQLStore_BootstrapUser(t *testing.T) {
 	}
 }
 
+func TestSQLStore_ListByTenant(t *testing.T) {
+	s := newTestSQLStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	makeEnv := func(id, tenantID, userID string) *domain.Environment {
+		return &domain.Environment{
+			ID: id, TenantID: tenantID, UserID: userID,
+			Status: domain.StatusRunning,
+			Spec:   domain.EnvironmentSpec{Image: "alpine:latest", NetworkPolicy: domain.NetworkNone},
+			CreatedAt: now, LastUsedAt: now, ExpiresAt: now.Add(60 * time.Minute),
+		}
+	}
+
+	// Two end-users under tenant-x, one under tenant-y.
+	for _, e := range []*domain.Environment{
+		makeEnv("env_alice", "tenant-x", "user-alice"),
+		makeEnv("env_bob", "tenant-x", "user-bob"),
+		makeEnv("env_other", "tenant-y", "user-other"),
+	} {
+		if err := s.Create(ctx, e); err != nil {
+			t.Fatalf("create %s: %v", e.ID, err)
+		}
+	}
+
+	list, err := s.ListByTenant(ctx, "tenant-x")
+	if err != nil {
+		t.Fatalf("ListByTenant: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("want 2 for tenant-x, got %d", len(list))
+	}
+	ids := map[string]bool{}
+	for _, e := range list {
+		ids[e.ID] = true
+	}
+	if !ids["env_alice"] || !ids["env_bob"] {
+		t.Fatalf("expected env_alice and env_bob, got %v", ids)
+	}
+	if ids["env_other"] {
+		t.Fatal("env_other from tenant-y must not appear in tenant-x list")
+	}
+}
+
+func TestSQLStore_ListSnapshotsByTenant(t *testing.T) {
+	s := newTestSQLStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	makeSnap := func(id, tenantID, userID string) *domain.Snapshot {
+		return &domain.Snapshot{
+			ID: id, TenantID: tenantID, UserID: userID,
+			EnvironmentID: "env_" + id, ImageID: "img_" + id,
+			CreatedAt: now,
+		}
+	}
+
+	for _, snap := range []*domain.Snapshot{
+		makeSnap("snap_alice", "tenant-x", "user-alice"),
+		makeSnap("snap_bob", "tenant-x", "user-bob"),
+		makeSnap("snap_other", "tenant-y", "user-other"),
+	} {
+		if err := s.CreateSnapshot(ctx, snap); err != nil {
+			t.Fatalf("create snapshot %s: %v", snap.ID, err)
+		}
+	}
+
+	list, err := s.ListSnapshotsByTenant(ctx, "tenant-x")
+	if err != nil {
+		t.Fatalf("ListSnapshotsByTenant: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("want 2 for tenant-x, got %d", len(list))
+	}
+	ids := map[string]bool{}
+	for _, snap := range list {
+		ids[snap.ID] = true
+	}
+	if !ids["snap_alice"] || !ids["snap_bob"] {
+		t.Fatalf("expected snap_alice and snap_bob, got %v", ids)
+	}
+	if ids["snap_other"] {
+		t.Fatal("snap_other from tenant-y must not appear in tenant-x list")
+	}
+}
+
+// TestSQLStore_TenantIDBackfill simulates an existing database created before
+// tenant_id was added and verifies that migration backfills tenant_id = user_id.
+func TestSQLStore_TenantIDBackfill(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// Build the old schema — no tenant_id column anywhere.
+	for _, stmt := range []string{
+		"PRAGMA foreign_keys = ON",
+		`CREATE TABLE users (id TEXT PRIMARY KEY, created_at BIGINT NOT NULL)`,
+		`CREATE TABLE api_keys (
+			key_hash TEXT PRIMARY KEY,
+			user_id  TEXT NOT NULL REFERENCES users(id),
+			created_at BIGINT NOT NULL)`,
+		`CREATE TABLE environments (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL, container_id TEXT NOT NULL DEFAULT '',
+			created_at BIGINT NOT NULL, last_used_at BIGINT NOT NULL, expires_at BIGINT NOT NULL,
+			spec_image TEXT NOT NULL, spec_cpu REAL NOT NULL,
+			spec_memory_mb BIGINT NOT NULL, spec_disk_mb BIGINT NOT NULL,
+			spec_network_policy TEXT NOT NULL, spec_env_vars TEXT NOT NULL DEFAULT '{}')`,
+		`CREATE TABLE snapshots (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL DEFAULT '',
+			environment_id TEXT NOT NULL DEFAULT '', image_id TEXT NOT NULL,
+			label TEXT NOT NULL DEFAULT '', size BIGINT NOT NULL DEFAULT 0,
+			created_at BIGINT NOT NULL)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("setup old schema: %v", err)
+		}
+	}
+
+	// Seed pre-existing rows using the old column layout.
+	now := time.Now().Unix()
+	if _, err := db.Exec(
+		`INSERT INTO environments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"env_legacy", "user-legacy", "running", "", now, now, now+3600,
+		"alpine:latest", 1.0, 512, 2048, "none", "{}",
+	); err != nil {
+		t.Fatalf("insert legacy env: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO snapshots VALUES (?,?,?,?,?,?,?)`,
+		"snap_legacy", "user-legacy", "env_legacy", "img_legacy", "lbl", 0, now,
+	); err != nil {
+		t.Fatalf("insert legacy snapshot: %v", err)
+	}
+
+	// Run migration via NewSQLStore — should add tenant_id and backfill.
+	s, err := NewSQLStore(db, "sqlite", 5*time.Minute, 30*time.Minute)
+	if err != nil {
+		t.Fatalf("NewSQLStore migration: %v", err)
+	}
+
+	ctx := context.Background()
+
+	env, err := s.Get(ctx, "env_legacy", "")
+	if err != nil {
+		t.Fatalf("Get after migration: %v", err)
+	}
+	if env.TenantID != "user-legacy" {
+		t.Fatalf("env TenantID backfill: want user-legacy, got %q", env.TenantID)
+	}
+
+	snap, err := s.GetSnapshot(ctx, "snap_legacy", "")
+	if err != nil {
+		t.Fatalf("GetSnapshot after migration: %v", err)
+	}
+	if snap.TenantID != "user-legacy" {
+		t.Fatalf("snapshot TenantID backfill: want user-legacy, got %q", snap.TenantID)
+	}
+}
+
 func TestSQLStore_ListExpired(t *testing.T) {
 	s := newTestSQLStore(t)
 	ctx := context.Background()

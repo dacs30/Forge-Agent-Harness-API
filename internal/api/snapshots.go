@@ -35,6 +35,7 @@ type createSnapshotRequest struct {
 func (h *SnapshotHandler) Create(w http.ResponseWriter, r *http.Request) {
 	envID := chi.URLParam(r, "id")
 	userID := auth.UserIDFromContext(r.Context())
+	tenantID := auth.TenantIDFromContext(r.Context())
 
 	env, err := h.store.Get(r.Context(), envID, userID)
 	if err != nil {
@@ -66,6 +67,7 @@ func (h *SnapshotHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	snap := &domain.Snapshot{
 		ID:            snapID,
+		TenantID:      tenantID,
 		UserID:        userID,
 		EnvironmentID: envID,
 		ImageID:       imageID,
@@ -116,6 +118,19 @@ func (h *SnapshotHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, snap)
+}
+
+// ListTenant returns all snapshots owned by the tenant across all end-users.
+// GET /v1/tenant/snapshots
+func (h *SnapshotHandler) ListTenant(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantIDFromContext(r.Context())
+
+	snaps, err := h.store.ListSnapshotsByTenant(r.Context(), tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list snapshots")
+		return
+	}
+	writeJSON(w, http.StatusOK, snaps)
 }
 
 // Delete removes a snapshot and its underlying Docker image.

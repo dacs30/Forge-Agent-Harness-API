@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -11,21 +12,47 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// Server wraps the MCP server and the HaaS HTTP client.
+// mcpAPIKeyContextKey is the context key used to carry the authenticated tenant
+// API key through the HTTP middleware into tool handlers.
+type mcpAPIKeyContextKey struct{}
+
+// Server wraps the MCP server and the HaaS REST URL + valid API keys.
 type Server struct {
-	mcp    *server.MCPServer
-	client *haasClient
+	mcp     *server.MCPServer
+	restURL string
+	apiKeys []string // REST API keys; tool handlers pick the right one from context
 }
 
 // New creates and configures the MCP server with all tools and resources registered.
-func New(haasURL, apiKey string) *Server {
+// apiKeys must be the same set of keys used for REST API auth so that each tenant's
+// MCP requests are proxied to the REST API using their own key.
+func New(haasURL string, apiKeys []string) *Server {
 	s := &Server{
-		mcp:    server.NewMCPServer("haas", "1.0.0"),
-		client: newHaasClient(haasURL, apiKey),
+		mcp:     server.NewMCPServer("haas", "1.0.0"),
+		restURL: strings.TrimRight(haasURL, "/"),
+		apiKeys: apiKeys,
 	}
 	s.registerTools()
 	s.registerResources()
 	return s
+}
+
+// clientFromContext returns a haasClient that uses the tenant API key injected
+// by bearerAuthMiddleware. If the context key is absent (stdio mode) or the key
+// is not in s.apiKeys (standalone proxy where MCP auth keys differ from REST key),
+// it falls back to the first configured REST key.
+func (s *Server) clientFromContext(ctx context.Context) *haasClient {
+	if key, ok := ctx.Value(mcpAPIKeyContextKey{}).(string); ok && key != "" {
+		for _, k := range s.apiKeys {
+			if k == key {
+				return newHaasClient(s.restURL, key)
+			}
+		}
+	}
+	if len(s.apiKeys) > 0 {
+		return newHaasClient(s.restURL, s.apiKeys[0])
+	}
+	return newHaasClient(s.restURL, "")
 }
 
 // ServeStdio starts the MCP server over stdin/stdout (for Claude Desktop, Cursor, etc.).
@@ -88,11 +115,15 @@ func (s *Server) ServeStreamableHTTP(addr string, apiKeys []string) error {
 }
 
 func bearerAuthMiddleware(apiKeys []string, next http.Handler) http.Handler {
-	hashes := make([][]byte, 0, len(apiKeys))
+	type entry struct {
+		hash []byte
+		raw  string
+	}
+	entries := make([]entry, 0, len(apiKeys))
 	for _, k := range apiKeys {
 		if k != "" {
 			h := sha256.Sum256([]byte(k))
-			hashes = append(hashes, []byte(hex.EncodeToString(h[:])))
+			entries = append(entries, entry{hash: []byte(hex.EncodeToString(h[:])), raw: k})
 		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -104,20 +135,28 @@ func bearerAuthMiddleware(apiKeys []string, next http.Handler) http.Handler {
 		}
 		th := sha256.Sum256([]byte(token))
 		candidate := []byte(hex.EncodeToString(th[:]))
-		ok := false
-		for _, h := range hashes {
-			if subtle.ConstantTimeCompare(h, candidate) == 1 {
-				ok = true
+		var matchedKey string
+		for _, e := range entries {
+			if subtle.ConstantTimeCompare(e.hash, candidate) == 1 {
+				matchedKey = e.raw
 				break
 			}
 		}
-		if !ok {
+		if matchedKey == "" {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r)
+		// Inject the authenticated raw key so tool handlers can build a per-tenant REST client.
+		ctx := context.WithValue(r.Context(), mcpAPIKeyContextKey{}, matchedKey)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
+
+// userIDParam is the optional end-user scoping parameter added to every tool.
+// When set, the operation is scoped to that end-user within the tenant.
+var userIDParam = mcp.WithString("user_id",
+	mcp.Description("Optional end-user identifier. When set, operations are scoped to this user so their containers are isolated from other users under the same API key. Omit to operate as the service owner."),
+)
 
 func (s *Server) registerTools() {
 	s.mcp.AddTool(
@@ -142,13 +181,15 @@ func (s *Server) registerTools() {
 			mcp.WithObject("env_vars",
 				mcp.Description("Environment variables to set inside the container (key-value map)"),
 			),
+			userIDParam,
 		),
 		s.handleCreateEnvironment,
 	)
 
 	s.mcp.AddTool(
 		mcp.NewTool("haas_list_environments",
-			mcp.WithDescription("List all active container environments."),
+			mcp.WithDescription("List active container environments. Returns only the calling user's environments; use haas_list_tenant_environments to see all users' environments."),
+			userIDParam,
 		),
 		s.handleListEnvironments,
 	)
@@ -160,6 +201,7 @@ func (s *Server) registerTools() {
 				mcp.Required(),
 				mcp.Description("The environment ID (e.g. 'env_a1b2c3d4')"),
 			),
+			userIDParam,
 		),
 		s.handleGetEnvironment,
 	)
@@ -171,6 +213,7 @@ func (s *Server) registerTools() {
 				mcp.Required(),
 				mcp.Description("The environment ID to destroy"),
 			),
+			userIDParam,
 		),
 		s.handleDestroyEnvironment,
 	)
@@ -192,6 +235,7 @@ func (s *Server) registerTools() {
 			mcp.WithNumber("timeout_seconds",
 				mcp.Description("Max seconds to wait for the command (default: 30)"),
 			),
+			userIDParam,
 		),
 		s.handleExec,
 	)
@@ -206,6 +250,7 @@ func (s *Server) registerTools() {
 			mcp.WithString("path",
 				mcp.Description("Directory path to list (default: '/')"),
 			),
+			userIDParam,
 		),
 		s.handleListFiles,
 	)
@@ -221,6 +266,7 @@ func (s *Server) registerTools() {
 				mcp.Required(),
 				mcp.Description("Absolute path to the file (e.g. '/app/main.py')"),
 			),
+			userIDParam,
 		),
 		s.handleReadFile,
 	)
@@ -240,6 +286,7 @@ func (s *Server) registerTools() {
 				mcp.Required(),
 				mcp.Description("Text content to write to the file"),
 			),
+			userIDParam,
 		),
 		s.handleWriteFile,
 	)
@@ -254,13 +301,15 @@ func (s *Server) registerTools() {
 			mcp.WithString("label",
 				mcp.Description("Optional human-readable label for the snapshot (e.g. 'before-migration', 'deps-installed')"),
 			),
+			userIDParam,
 		),
 		s.handleCreateSnapshot,
 	)
 
 	s.mcp.AddTool(
 		mcp.NewTool("haas_list_snapshots",
-			mcp.WithDescription("List all saved snapshots."),
+			mcp.WithDescription("List saved snapshots for the current user. Use haas_list_tenant_snapshots to see all users' snapshots."),
+			userIDParam,
 		),
 		s.handleListSnapshots,
 	)
@@ -284,6 +333,7 @@ func (s *Server) registerTools() {
 			mcp.WithString("network_policy",
 				mcp.Description("Network access: 'none' (isolated), 'egress-limited', or 'full' (default: 'none')"),
 			),
+			userIDParam,
 		),
 		s.handleRestoreSnapshot,
 	)
@@ -295,8 +345,23 @@ func (s *Server) registerTools() {
 				mcp.Required(),
 				mcp.Description("The snapshot ID to delete"),
 			),
+			userIDParam,
 		),
 		s.handleDeleteSnapshot,
+	)
+
+	s.mcp.AddTool(
+		mcp.NewTool("haas_list_tenant_environments",
+			mcp.WithDescription("List all active environments across every end-user under this API key. Useful for service owners to get a full view of all containers regardless of which user created them."),
+		),
+		s.handleListTenantEnvironments,
+	)
+
+	s.mcp.AddTool(
+		mcp.NewTool("haas_list_tenant_snapshots",
+			mcp.WithDescription("List all snapshots across every end-user under this API key. Useful for service owners to get a full view of all snapshots regardless of which user created them."),
+		),
+		s.handleListTenantSnapshots,
 	)
 }
 

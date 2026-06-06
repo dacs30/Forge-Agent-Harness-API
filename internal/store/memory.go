@@ -75,7 +75,7 @@ func (s *MemoryStore) Delete(_ context.Context, id, userID string) error {
 	return nil
 }
 
-// List returns all environments. If userID is non-empty, only that tenant's environments are returned.
+// List returns all environments. If userID is non-empty, only that user's environments are returned.
 func (s *MemoryStore) List(_ context.Context, userID string) ([]*domain.Environment, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -85,6 +85,19 @@ func (s *MemoryStore) List(_ context.Context, userID string) ([]*domain.Environm
 			continue
 		}
 		result = append(result, env)
+	}
+	return result, nil
+}
+
+// ListByTenant returns all environments whose TenantID matches, spanning all end-users.
+func (s *MemoryStore) ListByTenant(_ context.Context, tenantID string) ([]*domain.Environment, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*domain.Environment, 0, len(s.envs))
+	for _, env := range s.envs {
+		if env.TenantID == tenantID {
+			result = append(result, env)
+		}
 	}
 	return result, nil
 }
@@ -157,4 +170,17 @@ func (s *MemoryStore) DeleteSnapshot(_ context.Context, id, userID string) error
 	}
 	delete(s.snapshots, id)
 	return nil
+}
+
+// ListSnapshotsByTenant returns all snapshots whose TenantID matches, spanning all end-users.
+func (s *MemoryStore) ListSnapshotsByTenant(_ context.Context, tenantID string) ([]*domain.Snapshot, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*domain.Snapshot, 0, len(s.snapshots))
+	for _, snap := range s.snapshots {
+		if snap.TenantID == tenantID {
+			result = append(result, snap)
+		}
+	}
+	return result, nil
 }

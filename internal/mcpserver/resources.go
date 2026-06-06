@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Server) handleEnvironmentsResource(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	envs, err := s.client.listEnvironments(ctx)
+	envs, err := s.clientFromContext(ctx).listEnvironments(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list environments: %w", err)
 	}
@@ -36,7 +36,7 @@ func (s *Server) handleEnvironmentResource(ctx context.Context, req mcp.ReadReso
 		return nil, fmt.Errorf("missing environment id in URI")
 	}
 
-	env, err := s.client.getEnvironment(ctx, id)
+	env, err := s.clientFromContext(ctx).getEnvironment(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("get environment %s: %w", id, err)
 	}

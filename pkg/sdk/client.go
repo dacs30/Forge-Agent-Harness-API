@@ -26,6 +26,7 @@ import (
 type Client struct {
 	baseURL    string
 	apiKey     string
+	endUserID  string // if non-empty, forwarded as X-Haas-User-ID on every request
 	httpClient *http.Client
 }
 
@@ -37,6 +38,18 @@ func WithHTTPClient(hc *http.Client) Option {
 	return func(c *Client) {
 		c.httpClient = hc
 	}
+}
+
+// ForUser returns a shallow copy of the client that sets X-Haas-User-ID on every
+// request. Use this when operating on behalf of a specific end-user within a tenant.
+//
+//	client := sdk.New(url, tenantKey)
+//	aliceClient := client.ForUser("alice")
+//	env, _ := aliceClient.CreateEnvironment(ctx, req) // scoped to alice
+func (c *Client) ForUser(externalUserID string) *Client {
+	copy := *c
+	copy.endUserID = strings.TrimSpace(externalUserID)
+	return &copy
 }
 
 // New creates a new Client pointing at baseURL and authenticating with apiKey.
@@ -224,6 +237,9 @@ func (c *Client) WriteFile(ctx context.Context, envID, path, content string) err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/octet-stream")
+	if c.endUserID != "" {
+		req.Header.Set("X-Haas-User-ID", c.endUserID)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -331,6 +347,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.endUserID != "" {
+		req.Header.Set("X-Haas-User-ID", c.endUserID)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
