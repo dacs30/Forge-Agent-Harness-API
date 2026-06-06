@@ -75,6 +75,7 @@ func TestMemoryStore_TenantIsolation(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	envA := &domain.Environment{
 		ID:         "env_aaa",
+		TenantID:   "user-a",
 		UserID:     "user-a",
 		Status:     domain.StatusRunning,
 		Spec:       domain.EnvironmentSpec{Image: "alpine:latest", NetworkPolicy: domain.NetworkNone},
@@ -84,6 +85,7 @@ func TestMemoryStore_TenantIsolation(t *testing.T) {
 	}
 	envB := &domain.Environment{
 		ID:         "env_bbb",
+		TenantID:   "user-b",
 		UserID:     "user-b",
 		Status:     domain.StatusRunning,
 		Spec:       domain.EnvironmentSpec{Image: "alpine:latest", NetworkPolicy: domain.NetworkNone},
@@ -136,6 +138,89 @@ func TestMemoryStore_TenantIsolation(t *testing.T) {
 	crossUpdate.UserID = "user-b"
 	if err := s.Update(ctx, &crossUpdate); err != ErrNotFound {
 		t.Fatalf("Update(envA as user-b): want ErrNotFound, got %v", err)
+	}
+}
+
+func TestMemoryStore_ListByTenant(t *testing.T) {
+	s := NewMemoryStore(10*time.Minute, 60*time.Minute)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Two end-users under the same tenant.
+	aliceEnv := &domain.Environment{
+		ID: "env_alice", TenantID: "tenant-x", UserID: "user-alice",
+		Status: domain.StatusRunning, Spec: domain.EnvironmentSpec{Image: "alpine:latest"},
+		CreatedAt: now, LastUsedAt: now, ExpiresAt: now.Add(60 * time.Minute),
+	}
+	bobEnv := &domain.Environment{
+		ID: "env_bob", TenantID: "tenant-x", UserID: "user-bob",
+		Status: domain.StatusRunning, Spec: domain.EnvironmentSpec{Image: "alpine:latest"},
+		CreatedAt: now, LastUsedAt: now, ExpiresAt: now.Add(60 * time.Minute),
+	}
+	// Unrelated tenant.
+	otherEnv := &domain.Environment{
+		ID: "env_other", TenantID: "tenant-y", UserID: "user-other",
+		Status: domain.StatusRunning, Spec: domain.EnvironmentSpec{Image: "alpine:latest"},
+		CreatedAt: now, LastUsedAt: now, ExpiresAt: now.Add(60 * time.Minute),
+	}
+
+	for _, e := range []*domain.Environment{aliceEnv, bobEnv, otherEnv} {
+		if err := s.Create(ctx, e); err != nil {
+			t.Fatalf("create %s: %v", e.ID, err)
+		}
+	}
+
+	list, err := s.ListByTenant(ctx, "tenant-x")
+	if err != nil {
+		t.Fatalf("ListByTenant: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 envs for tenant-x, got %d", len(list))
+	}
+	ids := map[string]bool{}
+	for _, e := range list {
+		ids[e.ID] = true
+	}
+	if !ids["env_alice"] || !ids["env_bob"] {
+		t.Fatalf("expected env_alice and env_bob, got %v", ids)
+	}
+	if ids["env_other"] {
+		t.Fatal("env_other from a different tenant must not appear in tenant-x list")
+	}
+}
+
+func TestMemoryStore_ListSnapshotsByTenant(t *testing.T) {
+	s := NewMemoryStore(10*time.Minute, 60*time.Minute)
+	ctx := context.Background()
+	now := time.Now()
+
+	snaps := []*domain.Snapshot{
+		{ID: "snap_alice", TenantID: "tenant-x", UserID: "user-alice", EnvironmentID: "env_1", ImageID: "img_1", CreatedAt: now},
+		{ID: "snap_bob", TenantID: "tenant-x", UserID: "user-bob", EnvironmentID: "env_2", ImageID: "img_2", CreatedAt: now},
+		{ID: "snap_other", TenantID: "tenant-y", UserID: "user-other", EnvironmentID: "env_3", ImageID: "img_3", CreatedAt: now},
+	}
+	for _, snap := range snaps {
+		if err := s.CreateSnapshot(ctx, snap); err != nil {
+			t.Fatalf("create %s: %v", snap.ID, err)
+		}
+	}
+
+	list, err := s.ListSnapshotsByTenant(ctx, "tenant-x")
+	if err != nil {
+		t.Fatalf("ListSnapshotsByTenant: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 for tenant-x, got %d", len(list))
+	}
+	ids := map[string]bool{}
+	for _, snap := range list {
+		ids[snap.ID] = true
+	}
+	if !ids["snap_alice"] || !ids["snap_bob"] {
+		t.Fatalf("expected snap_alice and snap_bob, got %v", ids)
+	}
+	if ids["snap_other"] {
+		t.Fatal("snap_other from tenant-y must not appear in tenant-x list")
 	}
 }
 

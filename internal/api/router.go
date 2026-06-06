@@ -61,5 +61,14 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 		r.Delete("/{id}", snapshotHandler.Delete)
 	})
 
+	// Tenant-admin routes: return all environments/snapshots across every end-user
+	// under the authenticated API key. Useful for service owners to inspect all
+	// containers created by their users.
+	r.Route("/v1/tenant", func(r chi.Router) {
+		r.Use(authMgr.Middleware())
+		r.Get("/environments", envHandler.ListTenant)
+		r.Get("/snapshots", snapshotHandler.ListTenant)
+	})
+
 	return r
 }

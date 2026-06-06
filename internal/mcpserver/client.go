@@ -19,6 +19,7 @@ import (
 type haasClient struct {
 	baseURL    string
 	apiKey     string
+	userID     string // if non-empty, forwarded as X-Haas-User-ID to scope requests to an end-user
 	httpClient *http.Client
 }
 
@@ -28,6 +29,14 @@ func newHaasClient(baseURL, apiKey string) *haasClient {
 		apiKey:     apiKey,
 		httpClient: &http.Client{}, // no global timeout — exec streams can be long; callers use context deadlines
 	}
+}
+
+// withUserID returns a shallow copy of the client scoped to the given end-user ID.
+// The caller's original client is not modified.
+func (c *haasClient) withUserID(userID string) *haasClient {
+	copy := *c
+	copy.userID = userID
+	return &copy
 }
 
 func (c *haasClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
@@ -45,6 +54,9 @@ func (c *haasClient) do(ctx context.Context, method, path string, body any) (*ht
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.userID != "" {
+		req.Header.Set("X-Haas-User-ID", c.userID)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -210,6 +222,9 @@ func (c *haasClient) writeFile(ctx context.Context, envID, path, content string)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/octet-stream")
+	if c.userID != "" {
+		req.Header.Set("X-Haas-User-ID", c.userID)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -271,6 +286,42 @@ func (c *haasClient) deleteSnapshot(ctx context.Context, id string) error {
 		return readAPIError(resp)
 	}
 	return nil
+}
+
+func (c *haasClient) listTenantEnvironments(ctx context.Context) ([]*apitypes.Environment, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/v1/tenant/environments", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, readAPIError(resp)
+	}
+
+	var out []*apitypes.Environment
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+func (c *haasClient) listTenantSnapshots(ctx context.Context) ([]*apitypes.Snapshot, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/v1/tenant/snapshots", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, readAPIError(resp)
+	}
+
+	var out []*apitypes.Snapshot
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
 }
 
 func (c *haasClient) restoreSnapshot(ctx context.Context, req apitypes.CreateEnvironmentRequest) (*apitypes.CreateEnvironmentResponse, error) {

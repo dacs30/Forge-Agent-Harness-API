@@ -8,6 +8,7 @@ import "time"
 // are NOT preserved — only the filesystem layer is.
 type Snapshot struct {
 	ID            string    `json:"id"`
+	TenantID      string    `json:"tenant_id"`
 	UserID        string    `json:"user_id"`
 	EnvironmentID string    `json:"environment_id"`
 	ImageID       string    `json:"image_id"` // Docker image ID (sha256:...)

@@ -35,12 +35,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	// MCP_API_KEYS: comma-separated keys clients must send as Bearer tokens.
-	// Defaults to HAAS_API_KEY so there's only one key to manage.
+	// MCP_API_KEYS: comma-separated keys clients must send as Bearer tokens to
+	// authenticate with this MCP server. Defaults to HAAS_API_KEY.
+	//
+	// DESIGN CONSTRAINT — standalone single-tenant proxy:
+	// All authenticated MCP requests are forwarded to the HaaS REST API using the
+	// single HAAS_API_KEY, regardless of which MCP_API_KEY the client used.
+	// Multiple MCP_API_KEYS provide access control to this proxy but do NOT create
+	// separate HaaS tenants — all clients share the same REST identity.
+	//
+	// For true multi-tenant isolation (each API key = separate namespace), run the
+	// embedded MCP server via `cmd/haas` instead, where MCP auth keys and REST keys
+	// are the same set and each request is proxied with the caller's own key.
 	mcpKeys := parseMCPKeys(os.Getenv("MCP_API_KEYS"), apiKey)
 
 	transport := os.Getenv("MCP_TRANSPORT") // "stdio" (default) | "sse" | "http"
-	s := mcpserver.New(haasURL, apiKey)
+	s := mcpserver.New(haasURL, []string{apiKey})
 
 	switch transport {
 	case "sse":

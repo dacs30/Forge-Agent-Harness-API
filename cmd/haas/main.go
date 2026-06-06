@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/joho/godotenv"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/joho/godotenv"
 	_ "modernc.org/sqlite"
 
 	"haas/internal/api"
@@ -81,7 +81,7 @@ func main() {
 	}
 
 	// Start the MCP server after a brief wait to let the REST API bind first.
-	mcpSrv := mcpserver.New(restURL, cfg.APIKeys[0])
+	mcpSrv := mcpserver.New(restURL, cfg.APIKeys)
 	go func() {
 		logger.Info("starting MCP server (streamable HTTP)", "addr", cfg.MCPListenAddr, "rest_url", restURL)
 		if err := mcpSrv.ServeStreamableHTTP(cfg.MCPListenAddr, cfg.APIKeys); err != nil {

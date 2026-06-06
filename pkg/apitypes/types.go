@@ -59,6 +59,8 @@ type EnvironmentSpec struct {
 // Environment is the full environment resource returned by GET /v1/environments and GET /v1/environments/{id}.
 type Environment struct {
 	ID          string          `json:"id"`
+	TenantID    string          `json:"tenant_id,omitempty"`
+	UserID      string          `json:"user_id,omitempty"`
 	Spec        EnvironmentSpec `json:"spec"`
 	Status      string          `json:"status"`
 	ContainerID string          `json:"container_id,omitempty"`
@@ -82,6 +84,8 @@ type CreateSnapshotRequest struct {
 // Snapshot is the snapshot resource returned by the API.
 type Snapshot struct {
 	ID            string    `json:"id"`
+	TenantID      string    `json:"tenant_id,omitempty"`
+	UserID        string    `json:"user_id,omitempty"`
 	EnvironmentID string    `json:"environment_id"`
 	ImageID       string    `json:"image_id"`
 	Label         string    `json:"label"`

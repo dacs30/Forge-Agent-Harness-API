@@ -28,9 +28,16 @@ type Store interface {
 	// No-op for the in-memory store.
 	BootstrapUser(ctx context.Context, keyHash, userID string) error
 
+	// ListByTenant returns all environments owned by tenantID regardless of end-user scoping.
+	// Used by the service owner to see every container created under their API key.
+	ListByTenant(ctx context.Context, tenantID string) ([]*domain.Environment, error)
+
 	// Snapshot operations
 	CreateSnapshot(ctx context.Context, snap *domain.Snapshot) error
 	GetSnapshot(ctx context.Context, id, userID string) (*domain.Snapshot, error)
 	ListSnapshots(ctx context.Context, userID string) ([]*domain.Snapshot, error)
 	DeleteSnapshot(ctx context.Context, id, userID string) error
+
+	// ListSnapshotsByTenant returns all snapshots owned by tenantID regardless of end-user scoping.
+	ListSnapshotsByTenant(ctx context.Context, tenantID string) ([]*domain.Snapshot, error)
 }
