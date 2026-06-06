@@ -30,7 +30,8 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 
 	envService := service.NewEnvironmentService(s, e, logger, cfg)
 	envHandler := NewEnvironmentHandler(envService)
-	execHandler := NewExecHandler(s, e, logger)
+	execService := service.NewExecService(s, e, logger)
+	execHandler := NewExecHandler(execService)
 	execWSHandler := NewExecWSHandler(s, e, logger)
 	fileService := service.NewFileService(s, e, logger, cfg.MaxFileUploadMB<<20)
 	filesHandler := NewFilesHandler(fileService)
