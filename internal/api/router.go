@@ -33,7 +33,8 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 	execHandler := NewExecHandler(s, e, logger)
 	execWSHandler := NewExecWSHandler(s, e, logger)
 	filesHandler := NewFilesHandler(s, e, logger, cfg)
-	snapshotHandler := NewSnapshotHandler(s, e, logger)
+	snapshotService := service.NewSnapshotService(s, e, logger)
+	snapshotHandler := NewSnapshotHandler(snapshotService)
 
 	r.Route("/v1/environments", func(r chi.Router) {
 		r.Use(authMgr.Middleware())
