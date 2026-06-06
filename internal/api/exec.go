@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -14,46 +13,31 @@ import (
 	"haas/internal/auth"
 	"haas/internal/domain"
 	"haas/internal/engine"
+	"haas/internal/service"
 	"haas/internal/store"
 )
 
 type ExecHandler struct {
-	store  store.Store
-	engine engine.Engine
-	logger *slog.Logger
+	service *service.ExecService
 }
 
-func NewExecHandler(s store.Store, e engine.Engine, l *slog.Logger) *ExecHandler {
-	return &ExecHandler{store: s, engine: e, logger: l}
+func NewExecHandler(svc *service.ExecService) *ExecHandler {
+	return &ExecHandler{service: svc}
 }
 
 func (h *ExecHandler) Exec(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	userID := auth.UserIDFromContext(r.Context())
 
-	env, err := h.store.Get(r.Context(), id, userID)
+	target, err := h.service.PrepareExec(r.Context(), id, userID)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "environment not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "failed to get environment")
-		return
-	}
-
-	if env.Status != domain.StatusRunning {
-		writeError(w, http.StatusConflict, "environment is not running")
+		writePrepareExecError(w, err)
 		return
 	}
 
 	var req domain.ExecRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	if len(req.Command) == 0 {
-		writeError(w, http.StatusBadRequest, "command is required")
 		return
 	}
 
@@ -65,25 +49,12 @@ func (h *ExecHandler) Exec(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 	}
 
-	h.logger.Info("executing command",
-		"env_id", id,
-		"command", req.Command,
-		"working_dir", req.WorkingDir,
-	)
-
-	reader, err := h.engine.Exec(ctx, env.ContainerID, req)
+	session, err := h.service.StartExec(ctx, r.Context(), target, req)
 	if err != nil {
-		h.logger.Error("exec failed", "error", err, "env_id", id)
-		writeError(w, http.StatusInternalServerError, "exec failed")
+		writeStartExecError(w, err)
 		return
 	}
-	defer reader.Close()
-
-	// Update last used timestamp
-	env.LastUsedAt = time.Now()
-	if err := h.store.Update(r.Context(), env); err != nil {
-		h.logger.Error("failed to update environment last used time", "error", err, "env_id", id)
-	}
+	defer session.Reader.Close()
 
 	// Stream NDJSON response
 	flusher, ok := w.(http.Flusher)
@@ -99,7 +70,7 @@ func (h *ExecHandler) Exec(w http.ResponseWriter, r *http.Request) {
 
 	encoder := json.NewEncoder(w)
 
-	err = engine.DemuxDockerStream(reader, func(stream string, data []byte) error {
+	err = engine.DemuxDockerStream(session.Reader, func(stream string, data []byte) error {
 		event := domain.ExecEvent{
 			Stream: stream,
 			Data:   string(data),
@@ -112,25 +83,37 @@ func (h *ExecHandler) Exec(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err != nil {
-		h.logger.Error("stream error", "error", err, "env_id", id)
+		h.service.LogStreamError(session, err)
 	}
 
 	// Get exit code
-	type execIDer interface {
-		ExecID() string
-	}
-	if e, ok := reader.(execIDer); ok {
-		exitCode, err := h.engine.ExecExitCode(ctx, e.ExecID())
-		if err != nil {
-			h.logger.Error("failed to get exit code", "error", err, "env_id", id)
-			exitCode = -1
-		}
+	if exitCode, ok := h.service.ExitCode(ctx, session); ok {
 		event := domain.ExecEvent{
 			Stream: "exit",
 			Data:   intToString(exitCode),
 		}
 		encoder.Encode(event)
 		flusher.Flush()
+	}
+}
+
+func writePrepareExecError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "environment not found")
+	case errors.Is(err, service.ErrEnvironmentNotRunning):
+		writeError(w, http.StatusConflict, "environment is not running")
+	default:
+		writeError(w, http.StatusInternalServerError, "failed to get environment")
+	}
+}
+
+func writeStartExecError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, service.ErrCommandRequired):
+		writeError(w, http.StatusBadRequest, "command is required")
+	default:
+		writeError(w, http.StatusInternalServerError, "exec failed")
 	}
 }
 

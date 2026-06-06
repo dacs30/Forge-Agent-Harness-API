@@ -28,6 +28,8 @@ type DockerEngine struct {
 	config *config.Config
 }
 
+const defaultWorkspaceDir = "/workspace"
+
 func NewDockerEngine(cfg *config.Config, logger *slog.Logger) (*DockerEngine, error) {
 	opts := []client.Opt{client.FromEnv, client.WithAPIVersionNegotiation()}
 	if cfg.DockerHost != "" {
@@ -70,22 +72,7 @@ func (e *DockerEngine) CreateContainer(ctx context.Context, env *domain.Environm
 		e.logger.Info("image found locally, skipping pull", "image", env.Spec.Image, "env_id", env.ID)
 	}
 
-	// Build container config
-	envVars := make([]string, 0, len(env.Spec.EnvVars))
-	for k, v := range env.Spec.EnvVars {
-		envVars = append(envVars, k+"="+v)
-	}
-
-	containerCfg := &container.Config{
-		Image: env.Spec.Image,
-		Env:   envVars,
-		Labels: map[string]string{
-			"haas.environment.id": env.ID,
-			"haas.managed":        "true",
-		},
-		// Keep container alive with a long-running process
-		Cmd: []string{"sleep", "infinity"},
-	}
+	containerCfg := containerConfig(env)
 
 	hostCfg := securityHostConfig(env.Spec)
 	hostCfg.NetworkMode = networkMode(env.Spec.NetworkPolicy)
@@ -97,6 +84,27 @@ func (e *DockerEngine) CreateContainer(ctx context.Context, env *domain.Environm
 
 	e.logger.Info("container created", "container_id", resp.ID[:12], "env_id", env.ID)
 	return resp.ID, nil
+}
+
+func containerConfig(env *domain.Environment) *container.Config {
+	envVars := make([]string, 0, len(env.Spec.EnvVars))
+	for k, v := range env.Spec.EnvVars {
+		envVars = append(envVars, k+"="+v)
+	}
+
+	return &container.Config{
+		Image: env.Spec.Image,
+		Env:   envVars,
+		// Docker creates the working directory when the container starts if it
+		// does not already exist in the image.
+		WorkingDir: defaultWorkspaceDir,
+		Labels: map[string]string{
+			"haas.environment.id": env.ID,
+			"haas.managed":        "true",
+		},
+		// Keep container alive with a long-running process
+		Cmd: []string{"sleep", "infinity"},
+	}
 }
 
 func (e *DockerEngine) StartContainer(ctx context.Context, containerID string) error {
@@ -397,8 +405,8 @@ func (e *DockerEngine) ReadFile(ctx context.Context, containerID string, path st
 	}
 
 	return &tarFileReader{
-		Reader:     tr,
-		closer:     reader,
+		Reader: tr,
+		closer: reader,
 	}, nil
 }
 

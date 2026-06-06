@@ -85,6 +85,20 @@ func TestFullLifecycle(t *testing.T) {
 	}
 	t.Logf("exec output: %s", w.Body.String())
 
+	// 2b. Containers start in /workspace, and Docker creates it if the image
+	// does not already include that directory.
+	execBody = `{"command":["pwd"]}`
+	req = authReq(http.MethodPost, "/v1/environments/"+envID+"/exec", bytes.NewBufferString(execBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("pwd exec: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`/workspace\n`)) {
+		t.Fatalf("expected pwd output to include /workspace, got: %s", w.Body.String())
+	}
+
 	// 3. Write file
 	fileContent := []byte("hello from haas")
 	req = authReq(http.MethodPut, "/v1/environments/"+envID+"/files/content?path=/tmp/test.txt", bytes.NewReader(fileContent))
