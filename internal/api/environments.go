@@ -2,30 +2,21 @@ package api
 
 import (
 	"errors"
-	"log/slog"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 
 	"haas/internal/auth"
-	"haas/internal/config"
-	"haas/internal/domain"
-	"haas/internal/engine"
+	"haas/internal/service"
 	"haas/internal/store"
 )
 
 type EnvironmentHandler struct {
-	store  store.Store
-	engine engine.Engine
-	logger *slog.Logger
-	config *config.Config
+	service *service.EnvironmentService
 }
 
-func NewEnvironmentHandler(s store.Store, e engine.Engine, l *slog.Logger, cfg *config.Config) *EnvironmentHandler {
-	return &EnvironmentHandler{store: s, engine: e, logger: l, config: cfg}
+func NewEnvironmentHandler(svc *service.EnvironmentService) *EnvironmentHandler {
+	return &EnvironmentHandler{service: svc}
 }
 
 type CreateEnvironmentRequest struct {
@@ -54,111 +45,18 @@ func (h *EnvironmentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	tenantID := auth.TenantIDFromContext(r.Context())
 
-	// Snapshot restore: look up snapshot and use its image tag as the base image.
-	// Allowlist check is skipped — the snapshot was created from an already-trusted image.
-	if req.SnapshotID != "" {
-		snap, err := h.store.GetSnapshot(r.Context(), req.SnapshotID, userID)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				writeError(w, http.StatusNotFound, "snapshot not found")
-				return
-			}
-			writeError(w, http.StatusInternalServerError, "failed to get snapshot")
-			return
-		}
-		req.Image = snap.ImageRef()
-	} else {
-		if req.Image == "" {
-			writeError(w, http.StatusBadRequest, "image is required when snapshot_id is not set")
-			return
-		}
-		if len(h.config.AllowedImages) > 0 && !imageAllowed(req.Image, h.config.AllowedImages) {
-			writeError(w, http.StatusForbidden, "image not allowed: "+req.Image)
-			return
-		}
-	}
-
-	// Apply defaults
-	if req.CPU <= 0 {
-		req.CPU = h.config.DefaultCPU
-	}
-	if req.MemoryMB <= 0 {
-		req.MemoryMB = h.config.DefaultMemoryMB
-	}
-	if req.DiskMB <= 0 {
-		req.DiskMB = h.config.DefaultDiskMB
-	}
-	if req.NetworkPolicy == "" {
-		req.NetworkPolicy = h.config.DefaultNetworkPolicy
-	}
-
-	// Validate limits
-	if req.CPU < 0.1 || req.CPU > 4 {
-		writeError(w, http.StatusBadRequest, "cpu must be between 0.1 and 4")
-		return
-	}
-	if req.MemoryMB < 128 || req.MemoryMB > 8192 {
-		writeError(w, http.StatusBadRequest, "memory_mb must be between 128 and 8192")
-		return
-	}
-
-	np := domain.NetworkPolicy(req.NetworkPolicy)
-	if !np.Valid() {
-		writeError(w, http.StatusBadRequest, "network_policy must be none, egress-limited, or full")
-		return
-	}
-
-	now := time.Now()
-	env := &domain.Environment{
-		ID:       "env_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:12],
-		TenantID: tenantID,
-		UserID:   userID,
-		Spec: domain.EnvironmentSpec{
-			Image:         req.Image,
-			CPU:           req.CPU,
-			MemoryMB:      req.MemoryMB,
-			DiskMB:        req.DiskMB,
-			NetworkPolicy: np,
-			EnvVars:       req.EnvVars,
-		},
-		Status:     domain.StatusCreating,
-		CreatedAt:  now,
-		LastUsedAt: now,
-		ExpiresAt:  now.Add(h.config.MaxLifetime),
-	}
-
-	// Store first so we can track the environment
-	if err := h.store.Create(r.Context(), env); err != nil {
-		h.logger.Error("failed to store environment", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to create environment")
-		return
-	}
-
-	// Create and start container
-	containerID, err := h.engine.CreateContainer(r.Context(), env)
+	env, err := h.service.CreateEnvironment(r.Context(), tenantID, userID, service.CreateEnvironmentInput{
+		Image:         req.Image,
+		CPU:           req.CPU,
+		MemoryMB:      req.MemoryMB,
+		DiskMB:        req.DiskMB,
+		NetworkPolicy: req.NetworkPolicy,
+		EnvVars:       req.EnvVars,
+		SnapshotID:    req.SnapshotID,
+	})
 	if err != nil {
-		if delErr := h.store.Delete(r.Context(), env.ID, userID); delErr != nil {
-			h.logger.Error("failed to delete environment after container create failure", "error", delErr, "env_id", env.ID)
-		}
-		h.logger.Error("failed to create container", "error", err, "env_id", env.ID)
-		writeError(w, http.StatusInternalServerError, "failed to create container")
+		writeCreateEnvironmentError(w, err)
 		return
-	}
-
-	env.ContainerID = containerID
-	if err := h.engine.StartContainer(r.Context(), containerID); err != nil {
-		h.engine.StopContainer(r.Context(), containerID)
-		if delErr := h.store.Delete(r.Context(), env.ID, userID); delErr != nil {
-			h.logger.Error("failed to delete environment after container start failure", "error", delErr, "env_id", env.ID)
-		}
-		h.logger.Error("failed to start container", "error", err, "env_id", env.ID)
-		writeError(w, http.StatusInternalServerError, "failed to start container")
-		return
-	}
-
-	env.Status = domain.StatusRunning
-	if err := h.store.Update(r.Context(), env); err != nil {
-		h.logger.Error("failed to update environment status to running", "error", err, "env_id", env.ID)
 	}
 
 	writeJSON(w, http.StatusCreated, CreateEnvironmentResponse{
@@ -172,25 +70,8 @@ func (h *EnvironmentHandler) Destroy(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	userID := auth.UserIDFromContext(r.Context())
 
-	env, err := h.store.Get(r.Context(), id, userID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "environment not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "failed to get environment")
-		return
-	}
-
-	if env.ContainerID != "" {
-		if err := h.engine.StopContainer(r.Context(), env.ContainerID); err != nil {
-			h.logger.Error("failed to stop container", "error", err, "env_id", id)
-		}
-	}
-
-	if err := h.store.Delete(r.Context(), id, userID); err != nil {
-		h.logger.Error("failed to delete environment record", "error", err, "env_id", id)
-		writeError(w, http.StatusInternalServerError, "failed to delete environment")
+	if err := h.service.DestroyEnvironment(r.Context(), id, userID); err != nil {
+		writeDestroyEnvironmentError(w, err)
 		return
 	}
 
@@ -201,13 +82,9 @@ func (h *EnvironmentHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	userID := auth.UserIDFromContext(r.Context())
 
-	env, err := h.store.Get(r.Context(), id, userID)
+	env, err := h.service.GetEnvironment(r.Context(), id, userID)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "environment not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "failed to get environment")
+		writeGetEnvironmentError(w, err)
 		return
 	}
 
@@ -217,7 +94,7 @@ func (h *EnvironmentHandler) Get(w http.ResponseWriter, r *http.Request) {
 func (h *EnvironmentHandler) List(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 
-	envs, err := h.store.List(r.Context(), userID)
+	envs, err := h.service.ListEnvironments(r.Context(), userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list environments")
 		return
@@ -230,7 +107,7 @@ func (h *EnvironmentHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *EnvironmentHandler) ListTenant(w http.ResponseWriter, r *http.Request) {
 	tenantID := auth.TenantIDFromContext(r.Context())
 
-	envs, err := h.store.ListByTenant(r.Context(), tenantID)
+	envs, err := h.service.ListTenantEnvironments(r.Context(), tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list environments")
 		return
@@ -238,11 +115,46 @@ func (h *EnvironmentHandler) ListTenant(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, envs)
 }
 
-func imageAllowed(image string, allowlist []string) bool {
-	for _, allowed := range allowlist {
-		if image == allowed {
-			return true
-		}
+func writeCreateEnvironmentError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, service.ErrImageRequired):
+		writeError(w, http.StatusBadRequest, service.ErrImageRequired.Error())
+	case errors.Is(err, service.ErrImageNotAllowed):
+		writeError(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, service.ErrInvalidCPU):
+		writeError(w, http.StatusBadRequest, service.ErrInvalidCPU.Error())
+	case errors.Is(err, service.ErrInvalidMemory):
+		writeError(w, http.StatusBadRequest, service.ErrInvalidMemory.Error())
+	case errors.Is(err, service.ErrInvalidNetwork):
+		writeError(w, http.StatusBadRequest, service.ErrInvalidNetwork.Error())
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "snapshot not found")
+	case errors.Is(err, service.ErrGetSnapshot):
+		writeError(w, http.StatusInternalServerError, "failed to get snapshot")
+	case errors.Is(err, service.ErrCreateContainer):
+		writeError(w, http.StatusInternalServerError, "failed to create container")
+	case errors.Is(err, service.ErrStartContainer):
+		writeError(w, http.StatusInternalServerError, "failed to start container")
+	default:
+		writeError(w, http.StatusInternalServerError, "failed to create environment")
 	}
-	return false
+}
+
+func writeDestroyEnvironmentError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "environment not found")
+	case errors.Is(err, service.ErrGetEnvironment):
+		writeError(w, http.StatusInternalServerError, "failed to get environment")
+	default:
+		writeError(w, http.StatusInternalServerError, "failed to delete environment")
+	}
+}
+
+func writeGetEnvironmentError(w http.ResponseWriter, err error) {
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "environment not found")
+		return
+	}
+	writeError(w, http.StatusInternalServerError, "failed to get environment")
 }

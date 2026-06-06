@@ -10,6 +10,7 @@ import (
 	"haas/internal/auth"
 	"haas/internal/config"
 	"haas/internal/engine"
+	"haas/internal/service"
 	"haas/internal/store"
 )
 
@@ -27,7 +28,8 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	envHandler := NewEnvironmentHandler(s, e, logger, cfg)
+	envService := service.NewEnvironmentService(s, e, logger, cfg)
+	envHandler := NewEnvironmentHandler(envService)
 	execHandler := NewExecHandler(s, e, logger)
 	execWSHandler := NewExecWSHandler(s, e, logger)
 	filesHandler := NewFilesHandler(s, e, logger, cfg)
