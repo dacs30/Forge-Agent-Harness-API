@@ -52,6 +52,7 @@ func (h *EnvironmentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := auth.UserIDFromContext(r.Context())
+	tenantID := auth.TenantIDFromContext(r.Context())
 
 	// Snapshot restore: look up snapshot and use its image tag as the base image.
 	// Allowlist check is skipped — the snapshot was created from an already-trusted image.
@@ -109,8 +110,9 @@ func (h *EnvironmentHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	env := &domain.Environment{
-		ID:     "env_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:12],
-		UserID: userID,
+		ID:       "env_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:12],
+		TenantID: tenantID,
+		UserID:   userID,
 		Spec: domain.EnvironmentSpec{
 			Image:         req.Image,
 			CPU:           req.CPU,
@@ -216,6 +218,19 @@ func (h *EnvironmentHandler) List(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 
 	envs, err := h.store.List(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list environments")
+		return
+	}
+	writeJSON(w, http.StatusOK, envs)
+}
+
+// ListTenant returns all environments owned by the tenant across all end-users.
+// GET /v1/tenant/environments
+func (h *EnvironmentHandler) ListTenant(w http.ResponseWriter, r *http.Request) {
+	tenantID := auth.TenantIDFromContext(r.Context())
+
+	envs, err := h.store.ListByTenant(r.Context(), tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list environments")
 		return
