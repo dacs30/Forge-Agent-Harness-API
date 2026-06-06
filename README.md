@@ -54,17 +54,19 @@ graph TD
 
     subgraph API["API Layer (internal/api)"]
         Router["Router & Middleware"]
-        EnvH["Environments Handler<br/>CRUD"]
+        EnvH["Environments Handler<br/>CRUD + tenant-admin"]
         ExecH["Exec Handler<br/>Streaming NDJSON"]
         FilesH["Files Handler<br/>List / Read / Write"]
+        SnapH["Snapshots Handler<br/>Create / List / Restore / Delete"]
         Router --> EnvH
         Router --> ExecH
         Router --> FilesH
+        Router --> SnapH
     end
 
     subgraph MCP["MCP Server (internal/mcpserver)"]
         MCPSrv["MCP Server<br/>Streamable HTTP"]
-        Tools["Tool Handlers<br/>8 haas_* tools"]
+        Tools["Tool Handlers<br/>14 haas_* tools"]
         Resources["Resource Handlers<br/>haas://environments"]
         MCPClient["HaaS HTTP Client"]
         MCPSrv --> Tools
@@ -221,13 +223,21 @@ The MCP server starts automatically alongside the REST API on `:8091`. It expose
 | Tool | Description |
 |---|---|
 | `haas_create_environment` | Spin up a new container |
-| `haas_list_environments` | List active environments |
+| `haas_list_environments` | List active environments for the current user |
 | `haas_get_environment` | Get environment details |
 | `haas_destroy_environment` | Destroy an environment |
 | `haas_exec` | Run a command, returns stdout/stderr/exit code |
 | `haas_list_files` | List files at a path |
 | `haas_read_file` | Read a file |
 | `haas_write_file` | Write a file |
+| `haas_create_snapshot` | Save the container filesystem as a snapshot |
+| `haas_list_snapshots` | List saved snapshots for the current user |
+| `haas_restore_snapshot` | Create a new environment from a snapshot |
+| `haas_delete_snapshot` | Delete a snapshot |
+| `haas_list_tenant_environments` | List all environments across every end-user (service-owner view) |
+| `haas_list_tenant_snapshots` | List all snapshots across every end-user (service-owner view) |
+
+All tools accept an optional `user_id` parameter. When set, the operation is scoped to that end-user within the tenant (see [Multi-tenancy](#multi-tenancy) below).
 
 **Resources exposed:**
 
@@ -306,13 +316,64 @@ const response = await anthropic.beta.messages.create({
 
 ---
 
+## Multi-tenancy
+
+HaaS supports two-level multi-tenancy out of the box.
+
+**Tenant** — the owner of an API key (e.g. a SaaS product using HaaS). All requests authenticated with the same key belong to the same tenant namespace.
+
+**End-user** — an individual user within a tenant (e.g. one of that product's customers). Pass `X-Haas-User-ID` on any request to scope it to a specific end-user. Their containers and snapshots are invisible to other end-users even under the same API key.
+
+```bash
+# Alice creates an environment — only she can see or use it
+curl -X POST http://localhost:8080/v1/environments \
+  -H "Authorization: Bearer your-secret-key" \
+  -H "X-Haas-User-ID: alice" \
+  -H "Content-Type: application/json" \
+  -d '{"image": "ubuntu:22.04"}'
+
+# Bob cannot see Alice's environment — GET returns 404
+curl -H "Authorization: Bearer your-secret-key" \
+     -H "X-Haas-User-ID: bob" \
+     http://localhost:8080/v1/environments/env_alice123
+```
+
+Without `X-Haas-User-ID`, requests run as the service owner and can see all environments (equivalent to the tenant-admin view).
+
+**Tenant-admin endpoints** return resources across all end-users under the API key:
+
+```bash
+# See every container created by any end-user under your key
+curl -H "Authorization: Bearer your-secret-key" \
+     http://localhost:8080/v1/tenant/environments
+```
+
+**Go SDK** — use `ForUser` to get a scoped client:
+
+```go
+client := sdk.New("http://localhost:8080", "your-secret-key")
+
+aliceClient := client.ForUser("alice")
+env, _ := aliceClient.CreateEnvironment(ctx, req) // scoped to alice
+
+bobClient := client.ForUser("bob")
+```
+
+**MCP** — pass `user_id` to any tool to scope it to an end-user:
+
+```json
+{"tool": "haas_create_environment", "arguments": {"image": "ubuntu:22.04", "user_id": "alice"}}
+```
+
+---
+
 ## API Reference
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/healthz` | Health check (no auth required) |
 | `POST` | `/v1/environments` | Create a new environment |
-| `GET` | `/v1/environments` | List all environments |
+| `GET` | `/v1/environments` | List environments for the current user |
 | `GET` | `/v1/environments/{id}` | Get environment details |
 | `DELETE` | `/v1/environments/{id}` | Destroy an environment |
 | `POST` | `/v1/environments/{id}/exec` | Execute a command (NDJSON stream) |
@@ -320,6 +381,12 @@ const response = await anthropic.beta.messages.create({
 | `GET` | `/v1/environments/{id}/files?path=` | List files at path |
 | `GET` | `/v1/environments/{id}/files/content?path=` | Download a file |
 | `PUT` | `/v1/environments/{id}/files/content?path=` | Upload a file |
+| `POST` | `/v1/environments/{id}/snapshots` | Create a snapshot from a running environment |
+| `GET` | `/v1/snapshots` | List snapshots for the current user |
+| `GET` | `/v1/snapshots/{id}` | Get snapshot details |
+| `DELETE` | `/v1/snapshots/{id}` | Delete a snapshot |
+| `GET` | `/v1/tenant/environments` | List all environments across every end-user (tenant-admin) |
+| `GET` | `/v1/tenant/snapshots` | List all snapshots across every end-user (tenant-admin) |
 
 ### Create an Environment
 
@@ -473,7 +540,7 @@ haas/
 │   ├── engine/               # Container runtime abstraction (Docker)
 │   ├── lifecycle/            # Reaper — automatic container cleanup
 │   ├── mcpserver/            # MCP server (tools, resources, auth, transports)
-│   └── store/                # State persistence (in-memory)
+│   └── store/                # State persistence (in-memory, SQLite, PostgreSQL)
 ├── pkg/apitypes/             # Public request/response types for SDKs
 └── test/                     # Integration tests & test utilities
 ```
@@ -492,6 +559,7 @@ haas/
 - [ ] **Egress firewall** — Proper iptables rules for `egress-limited` network policy
 - [x] **WebSocket exec** — Interactive terminal sessions over WebSocket
 - [x] **Container snapshots** — Save and restore environment state
+- [x] **Multi-tenancy** — End-user isolation via `X-Haas-User-ID`; tenant-admin view across all users
 
 ---
 
