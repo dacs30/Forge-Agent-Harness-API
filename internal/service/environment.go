@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -156,12 +157,39 @@ func (s *EnvironmentService) CreateEnvironment(ctx context.Context, tenantID, us
 		return nil, fmt.Errorf("%w: %v", ErrStartContainer, err)
 	}
 
+	// Install the user's registered skills. A failing skill should not block the
+	// environment from coming up, so failures are logged and skipped.
+	s.injectSkills(ctx, userID, containerID)
+
 	env.Status = domain.StatusRunning
 	if err := s.store.Update(ctx, env); err != nil {
 		s.logger.Error("failed to update environment status to running", "error", err, "env_id", env.ID)
 	}
 
 	return env, nil
+}
+
+// injectSkills installs every skill registered for userID into the container's
+// skills directory. It is best-effort: a failure on one skill is logged and the
+// remaining skills (and the environment) proceed.
+func (s *EnvironmentService) injectSkills(ctx context.Context, userID, containerID string) {
+	skills, err := s.store.ListSkills(ctx, userID)
+	if err != nil {
+		s.logger.Error("failed to list skills for injection", "error", err, "user_id", userID)
+		return
+	}
+	for _, skill := range skills {
+		archive, err := s.store.GetSkillArchive(ctx, skill.ID, userID)
+		if err != nil {
+			s.logger.Warn("failed to load skill archive, skipping", "error", err, "skill_id", skill.ID)
+			continue
+		}
+		destDir := skill.InstallDir(s.config.SkillsDir)
+		if err := s.engine.ExtractArchive(ctx, containerID, destDir, bytes.NewReader(archive)); err != nil {
+			s.logger.Warn("failed to inject skill, skipping", "error", err, "skill_id", skill.ID, "name", skill.Name)
+			continue
+		}
+	}
 }
 
 func (s *EnvironmentService) DestroyEnvironment(ctx context.Context, id, userID string) error {

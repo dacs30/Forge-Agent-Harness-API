@@ -10,11 +10,11 @@ import (
 // InteractiveSession is a live, bidirectional TTY exec session on a container.
 // Write sends bytes to stdin; Reader returns the merged stdout/stderr TTY stream.
 type InteractiveSession interface {
-	io.Writer                                              // stdin
-	Reader() io.Reader                                     // merged stdout/stderr (raw TTY)
-	Resize(ctx context.Context, cols, rows uint) error    // resize the terminal
-	Close() error                                          // close the connection
-	ExecID() string                                        // Docker exec ID (for exit code)
+	io.Writer                                          // stdin
+	Reader() io.Reader                                 // merged stdout/stderr (raw TTY)
+	Resize(ctx context.Context, cols, rows uint) error // resize the terminal
+	Close() error                                      // close the connection
+	ExecID() string                                    // Docker exec ID (for exit code)
 }
 
 type Engine interface {
@@ -47,6 +47,11 @@ type Engine interface {
 
 	// WriteFile writes content to a file inside the container.
 	WriteFile(ctx context.Context, containerID string, path string, content io.Reader) error
+
+	// ExtractArchive extracts an uncompressed tar stream into destDir inside the
+	// container, creating destDir if it does not exist. Used to install
+	// multi-file skill directories.
+	ExtractArchive(ctx context.Context, containerID, destDir string, tarStream io.Reader) error
 
 	// SnapshotContainer commits the container's filesystem to a local Docker image
 	// tagged as "haas-snapshots:{snapshotID}". Returns the Docker image ID.

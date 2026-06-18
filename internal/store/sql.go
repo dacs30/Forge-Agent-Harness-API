@@ -87,13 +87,38 @@ CREATE TABLE IF NOT EXISTS snapshots (
 const createSnapshotsUserIDIndex = `CREATE INDEX IF NOT EXISTS idx_snapshots_user_id ON snapshots(user_id)`
 const createSnapshotsTenantIDIndex = `CREATE INDEX IF NOT EXISTS idx_snapshots_tenant_id ON snapshots(tenant_id)`
 
+// createSkillsTable is parameterised by the binary column type, which differs
+// between SQLite (BLOB) and PostgreSQL (BYTEA).
+func createSkillsTable(blobType string) string {
+	return `
+CREATE TABLE IF NOT EXISTS skills (
+    id         TEXT   PRIMARY KEY,
+    user_id    TEXT   NOT NULL DEFAULT '',
+    tenant_id  TEXT   NOT NULL DEFAULT '',
+    name       TEXT   NOT NULL,
+    archive    ` + blobType + ` NOT NULL,
+    size       BIGINT NOT NULL DEFAULT 0,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    UNIQUE(user_id, name)
+)`
+}
+
+const createSkillsUserIDIndex = `CREATE INDEX IF NOT EXISTS idx_skills_user_id ON skills(user_id)`
+const createSkillsTenantIDIndex = `CREATE INDEX IF NOT EXISTS idx_skills_tenant_id ON skills(tenant_id)`
+
 func (s *SQLStore) migrate() error {
 	// Phase 1: create tables (no-op if they already exist).
+	blobType := "BLOB"
+	if s.isPG {
+		blobType = "BYTEA"
+	}
 	tablestmts := []string{
 		createUsersTable,
 		createAPIKeysTable,
 		createEnvironmentsTable,
 		createSnapshotsTable,
+		createSkillsTable(blobType),
 	}
 	if !s.isPG {
 		tablestmts = append([]string{"PRAGMA foreign_keys = ON"}, tablestmts...)
@@ -122,6 +147,8 @@ func (s *SQLStore) migrate() error {
 		createEnvironmentsTenantIDIndex,
 		createSnapshotsUserIDIndex,
 		createSnapshotsTenantIDIndex,
+		createSkillsUserIDIndex,
+		createSkillsTenantIDIndex,
 	} {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return err
@@ -481,6 +508,159 @@ func scanSnapshot(row scanner) (*domain.Snapshot, error) {
 	}
 	snap.CreatedAt = time.Unix(createdAt, 0).UTC()
 	return &snap, nil
+}
+
+// --- Skill operations --------------------------------------------------------
+
+const skillColumns = `id, user_id, tenant_id, name, size, created_at, updated_at`
+
+// UpsertSkill inserts a skill or, on (user_id, name) conflict, replaces its
+// archive while preserving the original id and created_at.
+func (s *SQLStore) UpsertSkill(ctx context.Context, skill *domain.Skill, archive []byte) error {
+	q := s.rebind(`
+		INSERT INTO skills (id, user_id, tenant_id, name, archive, size, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (user_id, name) DO UPDATE SET
+			archive    = EXCLUDED.archive,
+			size       = EXCLUDED.size,
+			updated_at = EXCLUDED.updated_at`)
+	_, err := s.db.ExecContext(ctx, q,
+		skill.ID, skill.UserID, skill.TenantID, skill.Name, archive, skill.SizeBytes,
+		skill.CreatedAt.Unix(), skill.UpdatedAt.Unix(),
+	)
+	if err != nil {
+		return err
+	}
+	// Reflect the persisted identity (the original row on conflict) back to the caller.
+	persisted, err := s.getSkillByName(ctx, skill.UserID, skill.Name)
+	if err != nil {
+		return err
+	}
+	skill.ID = persisted.ID
+	skill.CreatedAt = persisted.CreatedAt
+	return nil
+}
+
+func (s *SQLStore) getSkillByName(ctx context.Context, userID, name string) (*domain.Skill, error) {
+	q := s.rebind(`SELECT ` + skillColumns + ` FROM skills WHERE user_id = ? AND name = ?`)
+	row := s.db.QueryRowContext(ctx, q, userID, name)
+	skill, err := scanSkill(row)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return skill, err
+}
+
+func (s *SQLStore) GetSkill(ctx context.Context, id, userID string) (*domain.Skill, error) {
+	var q string
+	var args []any
+	if userID == "" {
+		q = s.rebind(`SELECT ` + skillColumns + ` FROM skills WHERE id = ?`)
+		args = []any{id}
+	} else {
+		q = s.rebind(`SELECT ` + skillColumns + ` FROM skills WHERE id = ? AND user_id = ?`)
+		args = []any{id, userID}
+	}
+	row := s.db.QueryRowContext(ctx, q, args...)
+	skill, err := scanSkill(row)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return skill, err
+}
+
+func (s *SQLStore) GetSkillArchive(ctx context.Context, id, userID string) ([]byte, error) {
+	var q string
+	var args []any
+	if userID == "" {
+		q = s.rebind(`SELECT archive FROM skills WHERE id = ?`)
+		args = []any{id}
+	} else {
+		q = s.rebind(`SELECT archive FROM skills WHERE id = ? AND user_id = ?`)
+		args = []any{id, userID}
+	}
+	var archive []byte
+	err := s.db.QueryRowContext(ctx, q, args...).Scan(&archive)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return archive, err
+}
+
+func (s *SQLStore) ListSkills(ctx context.Context, userID string) ([]*domain.Skill, error) {
+	var q string
+	var args []any
+	base := `SELECT ` + skillColumns + ` FROM skills`
+	if userID == "" {
+		q = base
+	} else {
+		q = s.rebind(base + ` WHERE user_id = ?`)
+		args = []any{userID}
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSkills(rows)
+}
+
+func (s *SQLStore) ListSkillsByTenant(ctx context.Context, tenantID string) ([]*domain.Skill, error) {
+	q := s.rebind(`SELECT ` + skillColumns + ` FROM skills WHERE tenant_id = ?`)
+	rows, err := s.db.QueryContext(ctx, q, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSkills(rows)
+}
+
+func (s *SQLStore) DeleteSkill(ctx context.Context, id, userID string) error {
+	var q string
+	var args []any
+	if userID == "" {
+		q = s.rebind(`DELETE FROM skills WHERE id = ?`)
+		args = []any{id}
+	} else {
+		q = s.rebind(`DELETE FROM skills WHERE id = ? AND user_id = ?`)
+		args = []any{id, userID}
+	}
+	res, err := s.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func scanSkills(rows *sql.Rows) ([]*domain.Skill, error) {
+	var skills []*domain.Skill
+	for rows.Next() {
+		skill, err := scanSkill(rows)
+		if err != nil {
+			return nil, err
+		}
+		skills = append(skills, skill)
+	}
+	return skills, rows.Err()
+}
+
+func scanSkill(row scanner) (*domain.Skill, error) {
+	var skill domain.Skill
+	var createdAt, updatedAt int64
+	err := row.Scan(&skill.ID, &skill.UserID, &skill.TenantID, &skill.Name, &skill.SizeBytes, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	skill.CreatedAt = time.Unix(createdAt, 0).UTC()
+	skill.UpdatedAt = time.Unix(updatedAt, 0).UTC()
+	return &skill, nil
 }
 
 // --- helpers -----------------------------------------------------------------

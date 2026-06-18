@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -97,6 +98,64 @@ func TestEnvironmentService_CreateEnvironment_RunningUpdateFailureIsBestEffort(t
 	}
 	if env.Status != domain.StatusRunning {
 		t.Fatalf("expected returned environment to be running, got %s", env.Status)
+	}
+}
+
+func TestEnvironmentService_CreateEnvironment_InjectsRegisteredSkills(t *testing.T) {
+	ctx := context.Background()
+	mem := store.NewMemoryStore(10*time.Minute, 60*time.Minute)
+
+	// Register two skills for the user via the skill service.
+	cfg := testConfig()
+	cfg.SkillsDir = "/root/.claude/skills"
+	mock := &engine.MockEngine{}
+	skillSvc := NewSkillService(mem, mock, testLogger(), cfg.SkillsDir, 10<<20)
+	for _, name := range []string{"alpha", "beta"} {
+		archive := makeSkillTarGz(t, map[string]string{"SKILL.md": "x"})
+		if _, err := skillSvc.RegisterSkill(ctx, "tenant", "user", name, bytes.NewReader(archive)); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+
+	envSvc := NewEnvironmentService(mem, mock, testLogger(), cfg)
+	if _, err := envSvc.CreateEnvironment(ctx, "tenant", "user", CreateEnvironmentInput{Image: "alpine:latest"}); err != nil {
+		t.Fatalf("create environment: %v", err)
+	}
+
+	if len(mock.ExtractedArchives) != 2 {
+		t.Fatalf("expected 2 skills injected, got %d (%v)", len(mock.ExtractedArchives), mock.ExtractedArchives)
+	}
+	for _, dir := range mock.ExtractedArchives {
+		if dir != "/root/.claude/skills/alpha" && dir != "/root/.claude/skills/beta" {
+			t.Fatalf("unexpected injected dir %q", dir)
+		}
+	}
+}
+
+func TestEnvironmentService_CreateEnvironment_SkillInjectionFailureIsBestEffort(t *testing.T) {
+	ctx := context.Background()
+	mem := store.NewMemoryStore(10*time.Minute, 60*time.Minute)
+
+	cfg := testConfig()
+	cfg.SkillsDir = "/root/.claude/skills"
+	mock := &engine.MockEngine{
+		ExtractArchiveFn: func(context.Context, string, string, io.Reader) error {
+			return errors.New("extract boom")
+		},
+	}
+	skillSvc := NewSkillService(mem, mock, testLogger(), cfg.SkillsDir, 10<<20)
+	archive := makeSkillTarGz(t, map[string]string{"SKILL.md": "x"})
+	if _, err := skillSvc.RegisterSkill(ctx, "tenant", "user", "alpha", bytes.NewReader(archive)); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	envSvc := NewEnvironmentService(mem, mock, testLogger(), cfg)
+	env, err := envSvc.CreateEnvironment(ctx, "tenant", "user", CreateEnvironmentInput{Image: "alpine:latest"})
+	if err != nil {
+		t.Fatalf("create should succeed despite skill injection failure: %v", err)
+	}
+	if env.Status != domain.StatusRunning {
+		t.Fatalf("expected running, got %s", env.Status)
 	}
 }
 

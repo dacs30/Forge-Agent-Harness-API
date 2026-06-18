@@ -454,6 +454,27 @@ func (e *DockerEngine) WriteFile(ctx context.Context, containerID string, path s
 	return nil
 }
 
+// ExtractArchive extracts an uncompressed tar stream into destDir inside the
+// container. The destination directory is created first (CopyToContainer
+// requires it to exist), then Docker extracts the tar tree natively.
+func (e *DockerEngine) ExtractArchive(ctx context.Context, containerID, destDir string, tarStream io.Reader) error {
+	// CopyToContainer requires the destination directory to already exist.
+	mkdir, err := e.Exec(ctx, containerID, domain.ExecRequest{
+		Command: []string{"mkdir", "-p", destDir},
+	})
+	if err != nil {
+		return fmt.Errorf("create dest dir: %w", err)
+	}
+	// Drain to wait for completion, then close.
+	io.Copy(io.Discard, mkdir) //nolint:errcheck // best-effort drain
+	mkdir.Close()
+
+	if err := e.client.CopyToContainer(ctx, containerID, destDir, tarStream, container.CopyToContainerOptions{}); err != nil {
+		return fmt.Errorf("copy to container: %w", err)
+	}
+	return nil
+}
+
 func splitPath(path string) (dir, file string) {
 	idx := strings.LastIndex(path, "/")
 	if idx < 0 {

@@ -17,6 +17,8 @@ type Config struct {
 	MaxLifetime          time.Duration
 	DefaultNetworkPolicy string
 	MaxFileUploadMB      int64
+	MaxSkillMB           int64  // max size of an uploaded skill archive (tar.gz), in MB
+	SkillsDir            string // directory inside the container where skills are installed
 	APIKeys              []string
 	AllowedImages        []string // empty = all images allowed
 	DBURL                string   // empty = in-memory store; sqlite:///path or postgres://... for persistent
@@ -37,6 +39,8 @@ func Load() *Config {
 		MaxLifetime:          envOrDefaultDuration("HAAS_MAX_LIFETIME", 60*time.Minute),
 		DefaultNetworkPolicy: envOrDefault("HAAS_DEFAULT_NETWORK_POLICY", "none"),
 		MaxFileUploadMB:      envOrDefaultInt("HAAS_MAX_FILE_UPLOAD_MB", 100),
+		MaxSkillMB:           envOrDefaultInt("HAAS_MAX_SKILL_MB", 50),
+		SkillsDir:            envOrDefault("HAAS_SKILLS_DIR", "/root/.claude/skills"),
 		APIKeys:              envOrDefaultStringSlice("HAAS_API_KEYS", nil),
 		AllowedImages:        envOrDefaultStringSlice("HAAS_ALLOWED_IMAGES", nil),
 		DBURL:                envOrDefault("HAAS_DB_URL", ""),

@@ -37,6 +37,8 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 	filesHandler := NewFilesHandler(fileService)
 	snapshotService := service.NewSnapshotService(s, e, logger)
 	snapshotHandler := NewSnapshotHandler(snapshotService)
+	skillService := service.NewSkillService(s, e, logger, cfg.SkillsDir, cfg.MaxSkillMB<<20)
+	skillsHandler := NewSkillsHandler(skillService)
 
 	r.Route("/v1/environments", func(r chi.Router) {
 		r.Use(authMgr.Middleware())
@@ -56,6 +58,7 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 			})
 
 			r.Post("/snapshots", snapshotHandler.Create)
+			r.Post("/skills", skillsHandler.InstallToEnv)
 		})
 	})
 
@@ -66,6 +69,14 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 		r.Delete("/{id}", snapshotHandler.Delete)
 	})
 
+	r.Route("/v1/skills", func(r chi.Router) {
+		r.Use(authMgr.Middleware())
+		r.Post("/", skillsHandler.Register)
+		r.Get("/", skillsHandler.List)
+		r.Get("/{id}", skillsHandler.Get)
+		r.Delete("/{id}", skillsHandler.Delete)
+	})
+
 	// Tenant-admin routes: return all environments/snapshots across every end-user
 	// under the authenticated API key. Useful for service owners to inspect all
 	// containers created by their users.
@@ -73,6 +84,7 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 		r.Use(authMgr.Middleware())
 		r.Get("/environments", envHandler.ListTenant)
 		r.Get("/snapshots", snapshotHandler.ListTenant)
+		r.Get("/skills", skillsHandler.ListTenant)
 	})
 
 	return r

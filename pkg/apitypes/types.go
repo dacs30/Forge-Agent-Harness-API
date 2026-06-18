@@ -81,6 +81,18 @@ type CreateSnapshotRequest struct {
 	Label string `json:"label,omitempty"`
 }
 
+// Skill is the skill resource returned by the API. The archive bytes are not
+// included in listings; they are uploaded/registered separately.
+type Skill struct {
+	ID        string    `json:"id"`
+	TenantID  string    `json:"tenant_id,omitempty"`
+	UserID    string    `json:"user_id,omitempty"`
+	Name      string    `json:"name"`
+	SizeBytes int64     `json:"size_bytes"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // Snapshot is the snapshot resource returned by the API.
 type Snapshot struct {
 	ID            string    `json:"id"`

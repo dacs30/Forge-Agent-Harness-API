@@ -40,4 +40,17 @@ type Store interface {
 
 	// ListSnapshotsByTenant returns all snapshots owned by tenantID regardless of end-user scoping.
 	ListSnapshotsByTenant(ctx context.Context, tenantID string) ([]*domain.Snapshot, error)
+
+	// Skill operations. Skills are reusable Agent Skills registered per end-user.
+	// UpsertSkill inserts or replaces the skill identified by (userID, skill.Name),
+	// storing the (uncompressed tar) archive bytes alongside the metadata.
+	UpsertSkill(ctx context.Context, skill *domain.Skill, archive []byte) error
+	GetSkill(ctx context.Context, id, userID string) (*domain.Skill, error)
+	// GetSkillArchive returns the stored tar archive bytes for a skill.
+	GetSkillArchive(ctx context.Context, id, userID string) ([]byte, error)
+	ListSkills(ctx context.Context, userID string) ([]*domain.Skill, error)
+	DeleteSkill(ctx context.Context, id, userID string) error
+
+	// ListSkillsByTenant returns all skills owned by tenantID regardless of end-user scoping.
+	ListSkillsByTenant(ctx context.Context, tenantID string) ([]*domain.Skill, error)
 }

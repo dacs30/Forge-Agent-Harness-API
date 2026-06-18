@@ -12,14 +12,22 @@ type MemoryStore struct {
 	mu          sync.RWMutex
 	envs        map[string]*domain.Environment
 	snapshots   map[string]*domain.Snapshot
+	skills      map[string]*skillRecord
 	idleTimeout time.Duration
 	maxLifetime time.Duration
+}
+
+// skillRecord bundles skill metadata with its archive bytes for the in-memory store.
+type skillRecord struct {
+	skill   *domain.Skill
+	archive []byte
 }
 
 func NewMemoryStore(idleTimeout, maxLifetime time.Duration) *MemoryStore {
 	return &MemoryStore{
 		envs:        make(map[string]*domain.Environment),
 		snapshots:   make(map[string]*domain.Snapshot),
+		skills:      make(map[string]*skillRecord),
 		idleTimeout: idleTimeout,
 		maxLifetime: maxLifetime,
 	}
@@ -180,6 +188,94 @@ func (s *MemoryStore) ListSnapshotsByTenant(_ context.Context, tenantID string) 
 	for _, snap := range s.snapshots {
 		if snap.TenantID == tenantID {
 			result = append(result, snap)
+		}
+	}
+	return result, nil
+}
+
+// UpsertSkill inserts a new skill or, when one with the same (userID, name)
+// already exists, replaces its archive in place while preserving the original
+// ID and CreatedAt.
+func (s *MemoryStore) UpsertSkill(_ context.Context, skill *domain.Skill, archive []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, rec := range s.skills {
+		if rec.skill.UserID == skill.UserID && rec.skill.Name == skill.Name {
+			rec.skill.SizeBytes = skill.SizeBytes
+			rec.skill.UpdatedAt = skill.UpdatedAt
+			rec.archive = archive
+			// Reflect the persisted identity back to the caller.
+			skill.ID = rec.skill.ID
+			skill.CreatedAt = rec.skill.CreatedAt
+			return nil
+		}
+	}
+	stored := *skill
+	s.skills[skill.ID] = &skillRecord{skill: &stored, archive: archive}
+	return nil
+}
+
+func (s *MemoryStore) GetSkill(_ context.Context, id, userID string) (*domain.Skill, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rec, ok := s.skills[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if userID != "" && rec.skill.UserID != userID {
+		return nil, ErrNotFound
+	}
+	return rec.skill, nil
+}
+
+func (s *MemoryStore) GetSkillArchive(_ context.Context, id, userID string) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rec, ok := s.skills[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if userID != "" && rec.skill.UserID != userID {
+		return nil, ErrNotFound
+	}
+	return rec.archive, nil
+}
+
+func (s *MemoryStore) ListSkills(_ context.Context, userID string) ([]*domain.Skill, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*domain.Skill, 0, len(s.skills))
+	for _, rec := range s.skills {
+		if userID != "" && rec.skill.UserID != userID {
+			continue
+		}
+		result = append(result, rec.skill)
+	}
+	return result, nil
+}
+
+func (s *MemoryStore) DeleteSkill(_ context.Context, id, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.skills[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if userID != "" && rec.skill.UserID != userID {
+		return ErrNotFound
+	}
+	delete(s.skills, id)
+	return nil
+}
+
+// ListSkillsByTenant returns all skills whose TenantID matches, spanning all end-users.
+func (s *MemoryStore) ListSkillsByTenant(_ context.Context, tenantID string) ([]*domain.Skill, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*domain.Skill, 0, len(s.skills))
+	for _, rec := range s.skills {
+		if rec.skill.TenantID == tenantID {
+			result = append(result, rec.skill)
 		}
 	}
 	return result, nil

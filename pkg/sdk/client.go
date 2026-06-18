@@ -332,6 +332,113 @@ func (c *Client) RestoreSnapshot(ctx context.Context, snapshotID string, req api
 	return c.CreateEnvironment(ctx, req)
 }
 
+// RegisterSkill uploads a gzip-compressed tar of a skill directory and stores it
+// in the user's library under name, replacing any existing skill with that name.
+// The archive must contain a top-level SKILL.md.
+func (c *Client) RegisterSkill(ctx context.Context, name string, archive io.Reader) (*apitypes.Skill, error) {
+	resp, err := c.doRaw(ctx, http.MethodPost, "/v1/skills?name="+url.QueryEscape(name), archive)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		return nil, readAPIError(resp)
+	}
+
+	var out apitypes.Skill
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, nil
+}
+
+// ListSkills returns all skills in the authenticated user's library.
+func (c *Client) ListSkills(ctx context.Context) ([]*apitypes.Skill, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/v1/skills", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, readAPIError(resp)
+	}
+
+	var out []*apitypes.Skill
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// GetSkill returns a single skill by ID.
+func (c *Client) GetSkill(ctx context.Context, id string) (*apitypes.Skill, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/v1/skills/"+id, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, readAPIError(resp)
+	}
+
+	var out apitypes.Skill
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, nil
+}
+
+// DeleteSkill removes a skill from the user's library.
+func (c *Client) DeleteSkill(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/v1/skills/"+id, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		return readAPIError(resp)
+	}
+	return nil
+}
+
+// InstallSkillToEnvironment extracts a skill archive directly into a running
+// environment without registering it in the library.
+func (c *Client) InstallSkillToEnvironment(ctx context.Context, envID, name string, archive io.Reader) error {
+	resp, err := c.doRaw(ctx, http.MethodPost, "/v1/environments/"+envID+"/skills?name="+url.QueryEscape(name), archive)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		return readAPIError(resp)
+	}
+	return nil
+}
+
+// doRaw issues a request with a raw (non-JSON) body, used for binary uploads.
+func (c *Client) doRaw(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if c.endUserID != "" {
+		req.Header.Set("X-Haas-User-ID", c.endUserID)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http %s %s: %w", method, path, err)
+	}
+	return resp, nil
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
 	var bodyReader io.Reader
 	if body != nil {
