@@ -382,11 +382,17 @@ bobClient := client.ForUser("bob")
 | `GET` | `/v1/environments/{id}/files/content?path=` | Download a file |
 | `PUT` | `/v1/environments/{id}/files/content?path=` | Upload a file |
 | `POST` | `/v1/environments/{id}/snapshots` | Create a snapshot from a running environment |
+| `POST` | `/v1/environments/{id}/skills?name=` | Install a skill archive directly into a running environment |
 | `GET` | `/v1/snapshots` | List snapshots for the current user |
 | `GET` | `/v1/snapshots/{id}` | Get snapshot details |
 | `DELETE` | `/v1/snapshots/{id}` | Delete a snapshot |
+| `POST` | `/v1/skills?name=` | Register (or replace) a skill in the current user's library |
+| `GET` | `/v1/skills` | List skills for the current user |
+| `GET` | `/v1/skills/{id}` | Get skill details |
+| `DELETE` | `/v1/skills/{id}` | Delete a skill from the library |
 | `GET` | `/v1/tenant/environments` | List all environments across every end-user (tenant-admin) |
 | `GET` | `/v1/tenant/snapshots` | List all snapshots across every end-user (tenant-admin) |
+| `GET` | `/v1/tenant/skills` | List all skills across every end-user (tenant-admin) |
 
 ### Create an Environment
 
@@ -463,6 +469,74 @@ websocat "ws://localhost:8080/v1/environments/env_a1b2c3d4/exec/ws?cmd=bash" \
 
 ---
 
+## Skills
+
+Skills let consumers give their agents reusable capabilities. A **skill** is a directory containing a top-level `SKILL.md` (plus any supporting scripts/assets), packaged as a `tar.gz` and uploaded to HaaS. HaaS installs skills into each container at `HAAS_SKILLS_DIR` (default `/root/.claude/skills/<name>/`) so agents discover them automatically.
+
+There are two ways to deliver a skill:
+
+- **Tenant/user library (auto-injected)** — register a skill once; HaaS stores it and copies all of a user's skills into every new container that user creates. Survives container reaping.
+- **Per-environment** — push a skill straight into one running container, without registering it in the library. Useful for one-off or task-specific skills.
+
+Skills are scoped per end-user using the same `X-Haas-User-ID` model as environments and snapshots (see [Multi-tenancy](#multi-tenancy)).
+
+**Archive requirements:** gzip-compressed tar with a top-level `SKILL.md`. Entries that escape the skill directory (path traversal) or use symlinks are rejected. Size is bounded by `HAAS_MAX_SKILL_MB` (and a decompression-ratio guard).
+
+### Register a skill (library)
+
+```bash
+# Package the skill directory (SKILL.md must be at the archive root)
+tar -czf my-skill.tar.gz -C ./my-skill .
+
+# Register it under the name "my-skill" for end-user "alice"
+curl -X POST "http://localhost:8080/v1/skills?name=my-skill" \
+  -H "Authorization: Bearer your-secret-key" \
+  -H "X-Haas-User-ID: alice" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @my-skill.tar.gz
+```
+
+Response:
+```json
+{
+  "id": "skill_a1b2c3d4e5f6",
+  "name": "my-skill",
+  "size_bytes": 2048,
+  "created_at": "2026-06-21T10:00:00Z",
+  "updated_at": "2026-06-21T10:00:00Z"
+}
+```
+
+Registering again with the same `name` replaces the existing skill (the ID is preserved). Every environment Alice creates afterward will have the skill installed at `/root/.claude/skills/my-skill/`.
+
+### Install a skill into one running environment
+
+```bash
+curl -X POST "http://localhost:8080/v1/environments/env_a1b2c3d4/skills?name=adhoc" \
+  -H "Authorization: Bearer your-secret-key" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @my-skill.tar.gz
+# 204 No Content
+```
+
+### Go SDK
+
+```go
+client := sdk.New("http://localhost:8080", "your-secret-key")
+alice := client.ForUser("alice")
+
+f, _ := os.Open("my-skill.tar.gz")
+defer f.Close()
+skill, _ := alice.RegisterSkill(ctx, "my-skill", f)   // library
+skills, _ := alice.ListSkills(ctx)
+_ = alice.DeleteSkill(ctx, skill.ID)
+
+// Or install directly into a single environment:
+_ = alice.InstallSkillToEnvironment(ctx, "env_a1b2c3d4", "adhoc", f)
+```
+
+---
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -477,6 +551,8 @@ websocat "ws://localhost:8080/v1/environments/env_a1b2c3d4/exec/ws?cmd=bash" \
 | `HAAS_MAX_LIFETIME` | `60m` | Maximum container lifetime |
 | `HAAS_DEFAULT_NETWORK_POLICY` | `none` | Default network policy |
 | `HAAS_MAX_FILE_UPLOAD_MB` | `100` | Max file upload size (MB) |
+| `HAAS_MAX_SKILL_MB` | `50` | Max skill archive (tar.gz) upload size (MB) |
+| `HAAS_SKILLS_DIR` | `/root/.claude/skills` | Directory inside the container where skills are installed |
 | `HAAS_ALLOWED_IMAGES` | (all allowed) | Comma-separated allowlist of permitted Docker images (e.g. `ubuntu:22.04,python:3.12`) |
 | `HAAS_DB_URL` | (in-memory) | Database URL for persistent storage. `sqlite:///path/to/haas.db` for local dev, `postgres://user:pass@host/db` for production |
 | `HAAS_MCP_LISTEN_ADDR` | `:8091` | MCP server bind address |
@@ -560,6 +636,7 @@ haas/
 - [x] **WebSocket exec** — Interactive terminal sessions over WebSocket
 - [x] **Container snapshots** — Save and restore environment state
 - [x] **Multi-tenancy** — End-user isolation via `X-Haas-User-ID`; tenant-admin view across all users
+- [x] **Skills** — Upload reusable Agent Skills; auto-injected per user or installed per environment
 
 ---
 
