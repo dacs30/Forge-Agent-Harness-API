@@ -405,6 +405,27 @@ func (c *Client) DeleteSkill(ctx context.Context, id string) error {
 	return nil
 }
 
+// ListInstalledSkills returns the skills currently installed inside a running
+// environment, each with its SKILL.md frontmatter (name + description). Use this
+// to surface available skills to an agent driving the container.
+func (c *Client) ListInstalledSkills(ctx context.Context, envID string) ([]*apitypes.InstalledSkill, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/v1/environments/"+envID+"/skills", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, readAPIError(resp)
+	}
+
+	var out []*apitypes.InstalledSkill
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // InstallSkillToEnvironment extracts a skill archive directly into a running
 // environment without registering it in the library.
 func (c *Client) InstallSkillToEnvironment(ctx context.Context, envID, name string, archive io.Reader) error {

@@ -93,6 +93,14 @@ type Skill struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// InstalledSkill describes a skill discovered inside a running container, with
+// its SKILL.md frontmatter, as returned by GET /v1/environments/{id}/skills.
+type InstalledSkill struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Path        string `json:"path"`
+}
+
 // Snapshot is the snapshot resource returned by the API.
 type Snapshot struct {
 	ID            string    `json:"id"`

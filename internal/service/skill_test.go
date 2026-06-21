@@ -6,9 +6,12 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
+	"haas/internal/domain"
 	"haas/internal/engine"
 	"haas/internal/store"
 )
@@ -161,6 +164,81 @@ func TestSkillService_InstallToEnvironment(t *testing.T) {
 
 	if len(mock.ExtractedArchives) != 1 || mock.ExtractedArchives[0] != "/root/.claude/skills/adhoc" {
 		t.Fatalf("expected extract into skill dir, got %v", mock.ExtractedArchives)
+	}
+}
+
+func TestSkillService_ListInstalledSkills(t *testing.T) {
+	ctx := context.Background()
+	mem := store.NewMemoryStore(time.Minute, time.Minute)
+	seedRunningEnv(t, mem, "env_test", "tenant", "user")
+
+	manifests := map[string]string{
+		"/root/.claude/skills/pdf-tools/SKILL.md": "---\nname: pdf-tools\ndescription: Work with PDF files\n---\n# body",
+		"/root/.claude/skills/no-name/SKILL.md":   "---\ndescription: nameless skill\n---\n",
+	}
+	mock := &engine.MockEngine{
+		ListFilesFn: func(_ context.Context, _, path string) ([]domain.FileInfo, error) {
+			if path != "/root/.claude/skills" {
+				return nil, nil
+			}
+			return []domain.FileInfo{
+				{Name: "pdf-tools", IsDir: true},
+				{Name: "no-name", IsDir: true},
+				{Name: "loose.txt", IsDir: false}, // not a directory → skipped
+			}, nil
+		},
+		ReadFileFn: func(_ context.Context, _, path string) (io.ReadCloser, error) {
+			content, ok := manifests[path]
+			if !ok {
+				return nil, errors.New("no such file")
+			}
+			return io.NopCloser(strings.NewReader(content)), nil
+		},
+	}
+	svc := newTestSkillService(mem, mock)
+
+	skills, err := svc.ListInstalledSkills(ctx, "env_test", "user")
+	if err != nil {
+		t.Fatalf("list installed: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Fatalf("expected 2 installed skills, got %d (%+v)", len(skills), skills)
+	}
+
+	byName := map[string]domain.InstalledSkill{}
+	for _, s := range skills {
+		byName[s.Name] = s
+	}
+	if byName["pdf-tools"].Description != "Work with PDF files" {
+		t.Fatalf("unexpected pdf-tools: %+v", byName["pdf-tools"])
+	}
+	if byName["pdf-tools"].Path != "/root/.claude/skills/pdf-tools" {
+		t.Fatalf("unexpected path: %q", byName["pdf-tools"].Path)
+	}
+	// Falls back to the directory name when frontmatter has no name.
+	if _, ok := byName["no-name"]; !ok {
+		t.Fatalf("expected fallback to dir name 'no-name', got %+v", skills)
+	}
+}
+
+func TestSkillService_ListInstalledSkills_EmptyWhenDirMissing(t *testing.T) {
+	ctx := context.Background()
+	mem := store.NewMemoryStore(time.Minute, time.Minute)
+	seedRunningEnv(t, mem, "env_test", "tenant", "user")
+
+	mock := &engine.MockEngine{
+		ListFilesFn: func(context.Context, string, string) ([]domain.FileInfo, error) {
+			return nil, errors.New("no such directory")
+		},
+	}
+	svc := newTestSkillService(mem, mock)
+
+	skills, err := svc.ListInstalledSkills(ctx, "env_test", "user")
+	if err != nil {
+		t.Fatalf("expected no error when dir missing, got %v", err)
+	}
+	if len(skills) != 0 {
+		t.Fatalf("expected empty list, got %d", len(skills))
 	}
 }
 

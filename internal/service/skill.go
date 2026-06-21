@@ -104,15 +104,9 @@ func (s *SkillService) InstallSkillToEnvironment(ctx context.Context, envID, use
 		return err
 	}
 
-	env, err := s.store.Get(ctx, envID, userID)
+	env, err := s.getRunningEnv(ctx, envID, userID)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return store.ErrNotFound
-		}
-		return fmt.Errorf("%w: %v", ErrGetEnvironment, err)
-	}
-	if env.Status != domain.StatusRunning {
-		return ErrEnvironmentNotRunning
+		return err
 	}
 
 	tarBytes, err := s.decompressAndValidate(archive)
@@ -128,6 +122,50 @@ func (s *SkillService) InstallSkillToEnvironment(ctx context.Context, envID, use
 
 	s.logger.Info("skill installed to environment", "env_id", envID, "name", name)
 	return nil
+}
+
+// ListInstalledSkills inspects the skills directory inside a running container
+// and returns each installed skill with its SKILL.md frontmatter. It reflects
+// what is actually present in the box — both auto-injected library skills and
+// per-environment installs.
+func (s *SkillService) ListInstalledSkills(ctx context.Context, envID, userID string) ([]domain.InstalledSkill, error) {
+	env, err := s.getRunningEnv(ctx, envID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := s.engine.ListFiles(ctx, env.ContainerID, s.skillsDir)
+	if err != nil {
+		// The skills directory may not exist yet (no skills installed). Treat as empty.
+		return []domain.InstalledSkill{}, nil
+	}
+
+	installed := make([]domain.InstalledSkill, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir {
+			continue
+		}
+		dir := path.Join(s.skillsDir, entry.Name)
+		manifest, err := s.engine.ReadFile(ctx, env.ContainerID, path.Join(dir, skillManifest))
+		if err != nil {
+			continue // directory without a SKILL.md is not a skill
+		}
+		data, err := io.ReadAll(io.LimitReader(manifest, s.maxArchiveBytes))
+		manifest.Close()
+		if err != nil {
+			continue
+		}
+		name, description := parseSkillFrontmatter(data)
+		if name == "" {
+			name = entry.Name
+		}
+		installed = append(installed, domain.InstalledSkill{
+			Name:        name,
+			Description: description,
+			Path:        dir,
+		})
+	}
+	return installed, nil
 }
 
 func (s *SkillService) ListSkills(ctx context.Context, userID string) ([]*domain.Skill, error) {
@@ -224,6 +262,51 @@ func validateSkillTar(tarBytes []byte) error {
 		return ErrSkillMissingManifest
 	}
 	return nil
+}
+
+func (s *SkillService) getRunningEnv(ctx context.Context, envID, userID string) (*domain.Environment, error) {
+	env, err := s.store.Get(ctx, envID, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, store.ErrNotFound
+		}
+		return nil, fmt.Errorf("%w: %v", ErrGetEnvironment, err)
+	}
+	if env.Status != domain.StatusRunning {
+		return nil, ErrEnvironmentNotRunning
+	}
+	return env, nil
+}
+
+// parseSkillFrontmatter extracts the name and description from a SKILL.md YAML
+// frontmatter block (the leading `---` … `---` section). It handles only simple
+// single-line `key: value` pairs, which is all the Agent Skills format requires
+// for discovery.
+func parseSkillFrontmatter(data []byte) (name, description string) {
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	if !strings.HasPrefix(text, "---\n") {
+		return "", ""
+	}
+	end := strings.Index(text[4:], "\n---")
+	if end < 0 {
+		return "", ""
+	}
+	block := text[4 : 4+end]
+
+	for _, line := range strings.Split(block, "\n") {
+		key, val, found := strings.Cut(line, ":")
+		if !found {
+			continue
+		}
+		val = strings.Trim(strings.TrimSpace(val), `"'`)
+		switch strings.TrimSpace(key) {
+		case "name":
+			name = val
+		case "description":
+			description = val
+		}
+	}
+	return name, description
 }
 
 func validateSkillName(name string) error {

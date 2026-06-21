@@ -292,6 +292,18 @@ func (s *Server) registerTools() {
 	)
 
 	s.mcp.AddTool(
+		mcp.NewTool("haas_list_installed_skills",
+			mcp.WithDescription("List the Agent Skills installed inside a container environment, each with its name and description from SKILL.md. Use this to discover which skills are available, then read a skill's SKILL.md (via haas_read_file) to load its full instructions before using it."),
+			mcp.WithString("environment_id",
+				mcp.Required(),
+				mcp.Description("The environment ID"),
+			),
+			userIDParam,
+		),
+		s.handleListInstalledSkills,
+	)
+
+	s.mcp.AddTool(
 		mcp.NewTool("haas_create_snapshot",
 			mcp.WithDescription("Save a snapshot of a running environment's filesystem. Snapshots capture installed packages, files, and configuration — but not running processes. Use haas_restore_snapshot to spin up a new environment from a snapshot."),
 			mcp.WithString("environment_id",

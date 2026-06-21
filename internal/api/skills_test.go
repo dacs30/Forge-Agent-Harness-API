@@ -6,8 +6,10 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,5 +142,42 @@ func TestInstallSkillToEnvironment(t *testing.T) {
 	mock := e.(*engine.MockEngine)
 	if len(mock.ExtractedArchives) != 1 || mock.ExtractedArchives[0] != "/root/.claude/skills/adhoc" {
 		t.Fatalf("expected extract into skill dir, got %v", mock.ExtractedArchives)
+	}
+}
+
+func TestListInstalledSkills(t *testing.T) {
+	s, _, l, cfg, mgr := testDeps()
+	mock := &engine.MockEngine{
+		ListFilesFn: func(_ context.Context, _, path string) ([]domain.FileInfo, error) {
+			return []domain.FileInfo{{Name: "pdf-tools", IsDir: true}}, nil
+		},
+		ReadFileFn: func(_ context.Context, _, path string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader("---\nname: pdf-tools\ndescription: Work with PDFs\n---\n")), nil
+		},
+	}
+	router := NewRouter(s, mock, l, cfg, mgr)
+	userID, _ := mgr.UserID(testAPIKey)
+	now := time.Now()
+	if err := s.Create(context.Background(), &domain.Environment{
+		ID: "env_run", TenantID: userID, UserID: userID, Status: domain.StatusRunning,
+		ContainerID: "c1", CreatedAt: now, LastUsedAt: now, ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed env: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/environments/env_run/skills", nil)
+	req.Header.Set("Authorization", "Bearer "+testAPIKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var skills []apitypes.InstalledSkill
+	if err := json.NewDecoder(w.Body).Decode(&skills); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(skills) != 1 || skills[0].Name != "pdf-tools" || skills[0].Description != "Work with PDFs" {
+		t.Fatalf("unexpected skills: %+v", skills)
 	}
 }

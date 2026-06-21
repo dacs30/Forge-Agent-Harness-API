@@ -59,6 +59,7 @@ func NewRouter(s store.Store, e engine.Engine, logger *slog.Logger, cfg *config.
 
 			r.Post("/snapshots", snapshotHandler.Create)
 			r.Post("/skills", skillsHandler.InstallToEnv)
+			r.Get("/skills", skillsHandler.ListInstalled)
 		})
 	})
 

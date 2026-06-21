@@ -238,6 +238,24 @@ func (c *haasClient) writeFile(ctx context.Context, envID, path, content string)
 	return nil
 }
 
+func (c *haasClient) listInstalledSkills(ctx context.Context, envID string) ([]*apitypes.InstalledSkill, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/v1/environments/"+envID+"/skills", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, readAPIError(resp)
+	}
+
+	var out []*apitypes.InstalledSkill
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 func (c *haasClient) createSnapshot(ctx context.Context, envID, label string) (*apitypes.Snapshot, error) {
 	body := apitypes.CreateSnapshotRequest{Label: label}
 	resp, err := c.do(ctx, http.MethodPost, "/v1/environments/"+envID+"/snapshots", body)

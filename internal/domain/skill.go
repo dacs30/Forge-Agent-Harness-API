@@ -26,3 +26,13 @@ type Skill struct {
 func (s *Skill) InstallDir(baseDir string) string {
 	return path.Join(baseDir, s.Name)
 }
+
+// InstalledSkill describes a skill discovered inside a running container's skills
+// directory. It carries the SKILL.md frontmatter (name + description) so an
+// external agent can decide whether to load the full skill (progressive
+// disclosure) without reading every file itself.
+type InstalledSkill struct {
+	Name        string `json:"name"`        // frontmatter name; falls back to the directory name
+	Description string `json:"description"` // frontmatter description (may be empty)
+	Path        string `json:"path"`        // absolute install path inside the container
+}

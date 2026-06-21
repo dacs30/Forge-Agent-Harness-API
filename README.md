@@ -66,7 +66,7 @@ graph TD
 
     subgraph MCP["MCP Server (internal/mcpserver)"]
         MCPSrv["MCP Server<br/>Streamable HTTP"]
-        Tools["Tool Handlers<br/>14 haas_* tools"]
+        Tools["Tool Handlers<br/>15 haas_* tools"]
         Resources["Resource Handlers<br/>haas://environments"]
         MCPClient["HaaS HTTP Client"]
         MCPSrv --> Tools
@@ -230,6 +230,7 @@ The MCP server starts automatically alongside the REST API on `:8091`. It expose
 | `haas_list_files` | List files at a path |
 | `haas_read_file` | Read a file |
 | `haas_write_file` | Write a file |
+| `haas_list_installed_skills` | List Agent Skills installed in a container (name + description from SKILL.md) |
 | `haas_create_snapshot` | Save the container filesystem as a snapshot |
 | `haas_list_snapshots` | List saved snapshots for the current user |
 | `haas_restore_snapshot` | Create a new environment from a snapshot |
@@ -383,6 +384,7 @@ bobClient := client.ForUser("bob")
 | `PUT` | `/v1/environments/{id}/files/content?path=` | Upload a file |
 | `POST` | `/v1/environments/{id}/snapshots` | Create a snapshot from a running environment |
 | `POST` | `/v1/environments/{id}/skills?name=` | Install a skill archive directly into a running environment |
+| `GET` | `/v1/environments/{id}/skills` | List skills installed in a running environment (name + description from SKILL.md) |
 | `GET` | `/v1/snapshots` | List snapshots for the current user |
 | `GET` | `/v1/snapshots/{id}` | Get snapshot details |
 | `DELETE` | `/v1/snapshots/{id}` | Delete a snapshot |
@@ -519,6 +521,26 @@ curl -X POST "http://localhost:8080/v1/environments/env_a1b2c3d4/skills?name=adh
 # 204 No Content
 ```
 
+### Discovering installed skills
+
+How an agent *uses* a skill depends on what runtime is driving the container:
+
+- **Agent runs inside the container** (e.g. Claude Code or the Claude Agent SDK launched via `haas_exec`) — it discovers `~/.claude/skills/` automatically. No extra wiring; the default `HAAS_SKILLS_DIR` is the standard discovery path.
+- **Agent runs outside, driving the container over REST/MCP** — nothing auto-loads the skills. The harness must discover them and inject their descriptions into its prompt. Use this endpoint:
+
+```bash
+curl "http://localhost:8080/v1/environments/env_a1b2c3d4/skills" \
+  -H "Authorization: Bearer your-secret-key"
+```
+
+```json
+[
+  { "name": "my-skill", "description": "Convert and inspect PDF files", "path": "/root/.claude/skills/my-skill" }
+]
+```
+
+It reads the container's skills directory and parses each `SKILL.md` frontmatter, returning the `name` and `description` for every installed skill (both auto-injected library skills and per-environment installs). Surface these to the model, then have it read the full `SKILL.md` (via the file API or `haas_read_file`) when it decides to use one. The MCP equivalent is `haas_list_installed_skills`.
+
 ### Go SDK
 
 ```go
@@ -533,6 +555,9 @@ _ = alice.DeleteSkill(ctx, skill.ID)
 
 // Or install directly into a single environment:
 _ = alice.InstallSkillToEnvironment(ctx, "env_a1b2c3d4", "adhoc", f)
+
+// Discover skills installed in a running container (name + description):
+installed, _ := alice.ListInstalledSkills(ctx, "env_a1b2c3d4")
 ```
 
 ---

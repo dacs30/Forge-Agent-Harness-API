@@ -193,6 +193,28 @@ func (s *Server) handleReadFile(ctx context.Context, req mcp.CallToolRequest) (*
 	return mcp.NewToolResultText(string(content)), nil
 }
 
+func (s *Server) handleListInstalledSkills(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	envID, err := req.RequireString("environment_id")
+	if err != nil {
+		return mcp.NewToolResultError("environment_id is required"), nil
+	}
+
+	skills, err := s.scopedClient(ctx, req).listInstalledSkills(ctx, envID)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to list installed skills: %s", err)), nil
+	}
+
+	if len(skills) == 0 {
+		return mcp.NewToolResultText("No skills installed in this environment."), nil
+	}
+
+	data, err := json.MarshalIndent(skills, "", "  ")
+	if err != nil {
+		return mcp.NewToolResultError("failed to encode skills"), nil
+	}
+	return mcp.NewToolResultText(string(data)), nil
+}
+
 func (s *Server) handleCreateSnapshot(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	envID, err := req.RequireString("environment_id")
 	if err != nil {

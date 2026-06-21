@@ -110,6 +110,22 @@ func (h *SkillsHandler) InstallToEnv(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ListInstalled returns the skills currently installed inside a running
+// environment, each with its SKILL.md frontmatter, so an external agent can
+// discover and load them.
+// GET /v1/environments/{id}/skills
+func (h *SkillsHandler) ListInstalled(w http.ResponseWriter, r *http.Request) {
+	envID := chi.URLParam(r, "id")
+	userID := auth.UserIDFromContext(r.Context())
+
+	skills, err := h.service.ListInstalledSkills(r.Context(), envID, userID)
+	if err != nil {
+		writeSkillError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, skills)
+}
+
 func writeSkillError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
